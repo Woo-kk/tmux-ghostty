@@ -49,9 +49,32 @@ go build ./cmd/tmux-ghostty
 go build ./cmd/tmux-ghostty-broker
 ```
 
+This repository currently produces 2 binaries:
+
+- `tmux-ghostty`
+- `tmux-ghostty-broker`
+
+For release builds and local packaging:
+
+```bash
+make release-binaries VERSION=v0.1.0
+make package VERSION=v0.1.0
+```
+
+`make package` creates:
+
+- `dist/release/<version>/tmux-ghostty_<version>_darwin_universal.tar.gz`
+- `dist/release/<version>/tmux-ghostty_<version>_darwin_universal.pkg`
+- `dist/release/<version>/checksums.txt`
+
 ## CLI
 
 ```text
+tmux-ghostty version
+tmux-ghostty self-update --check
+tmux-ghostty self-update --version <tag>
+tmux-ghostty uninstall
+
 tmux-ghostty up
 tmux-ghostty down --force
 tmux-ghostty status
@@ -82,6 +105,33 @@ tmux-ghostty help
 ```
 
 `tmux-ghostty help` prints the full command list. `tmux-ghostty -h` and `tmux-ghostty --help` are equivalent aliases.
+
+`tmux-ghostty version` prints build metadata. `tmux-ghostty self-update` installs a GitHub Release package over the current installation. `tmux-ghostty uninstall` removes both installed binaries and the current user's runtime data.
+
+## Install, Update, Uninstall
+
+The packaged macOS installer places both binaries in:
+
+```text
+/usr/local/bin/tmux-ghostty
+/usr/local/bin/tmux-ghostty-broker
+```
+
+Typical lifecycle:
+
+```bash
+sudo /usr/sbin/installer -pkg tmux-ghostty_<version>_darwin_universal.pkg -target /
+tmux-ghostty version
+tmux-ghostty self-update --check
+tmux-ghostty self-update
+sudo tmux-ghostty uninstall
+```
+
+`tmux-ghostty uninstall` removes:
+
+- `/usr/local/bin/tmux-ghostty`
+- `/usr/local/bin/tmux-ghostty-broker`
+- `~/Library/Application Support/tmux-ghostty/`
 
 ## Command Risk Levels
 
@@ -119,10 +169,22 @@ Useful environment variables:
 
 - `TMUX_GHOSTTY_HOME`
 - `TMUX_GHOSTTY_BROKER_BIN`
+- `TMUX_GHOSTTY_RELEASE_REPO`
 - `TMUX_GHOSTTY_IDLE_TIMEOUT`
 - `TMUX_GHOSTTY_JUMP_PROFILE`
 - `TMUX_GHOSTTY_JUMP_RUNNER`
 - `TMUX_GHOSTTY_REMOTE_TMUX_SESSION`
+
+## GitHub Release Automation
+
+This repository includes `.github/workflows/release.yml`. Pushing a tag like `v0.1.0` triggers the macOS release pipeline:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow builds both binaries for `darwin/amd64` and `darwin/arm64`, merges universal binaries, creates the `.pkg`, notarizes it when Apple signing secrets are configured, and uploads the `.pkg`, `.tar.gz`, and `checksums.txt` to GitHub Release.
 
 ## Notes
 

@@ -49,9 +49,32 @@ go build ./cmd/tmux-ghostty
 go build ./cmd/tmux-ghostty-broker
 ```
 
+当前仓库会产出 2 个二进制：
+
+- `tmux-ghostty`
+- `tmux-ghostty-broker`
+
+如果要做 release 构建或本地打包，可以执行：
+
+```bash
+make release-binaries VERSION=v0.1.0
+make package VERSION=v0.1.0
+```
+
+`make package` 会生成：
+
+- `dist/release/<version>/tmux-ghostty_<version>_darwin_universal.tar.gz`
+- `dist/release/<version>/tmux-ghostty_<version>_darwin_universal.pkg`
+- `dist/release/<version>/checksums.txt`
+
 ## 命令行
 
 ```text
+tmux-ghostty version
+tmux-ghostty self-update --check
+tmux-ghostty self-update --version <tag>
+tmux-ghostty uninstall
+
 tmux-ghostty up
 tmux-ghostty down --force
 tmux-ghostty status
@@ -82,6 +105,33 @@ tmux-ghostty help
 ```
 
 `tmux-ghostty help` 会输出完整命令列表。`tmux-ghostty -h` 和 `tmux-ghostty --help` 是等价别名。
+
+`tmux-ghostty version` 会输出构建元信息。`tmux-ghostty self-update` 会用 GitHub Release 中的安装包覆盖当前安装。`tmux-ghostty uninstall` 会同时删除两个已安装二进制和当前用户的运行时数据。
+
+## 安装、升级、卸载
+
+macOS 安装包会把两个二进制放到：
+
+```text
+/usr/local/bin/tmux-ghostty
+/usr/local/bin/tmux-ghostty-broker
+```
+
+典型使用流程：
+
+```bash
+sudo /usr/sbin/installer -pkg tmux-ghostty_<version>_darwin_universal.pkg -target /
+tmux-ghostty version
+tmux-ghostty self-update --check
+tmux-ghostty self-update
+sudo tmux-ghostty uninstall
+```
+
+`tmux-ghostty uninstall` 会删除：
+
+- `/usr/local/bin/tmux-ghostty`
+- `/usr/local/bin/tmux-ghostty-broker`
+- `~/Library/Application Support/tmux-ghostty/`
 
 ## 命令分级
 
@@ -119,10 +169,22 @@ broker.log
 
 - `TMUX_GHOSTTY_HOME`
 - `TMUX_GHOSTTY_BROKER_BIN`
+- `TMUX_GHOSTTY_RELEASE_REPO`
 - `TMUX_GHOSTTY_IDLE_TIMEOUT`
 - `TMUX_GHOSTTY_JUMP_PROFILE`
 - `TMUX_GHOSTTY_JUMP_RUNNER`
 - `TMUX_GHOSTTY_REMOTE_TMUX_SESSION`
+
+## GitHub Release 自动发布
+
+仓库已经包含 `.github/workflows/release.yml`。推送类似 `v0.1.0` 的 tag 后，会触发 macOS release 流程：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+这个 workflow 会分别构建 `darwin/amd64` 和 `darwin/arm64` 的两个二进制，合并 universal binary，生成 `.pkg`，在 Apple 签名 secrets 配好时执行公证，并把 `.pkg`、`.tar.gz` 和 `checksums.txt` 上传到 GitHub Release。
 
 ## 说明
 

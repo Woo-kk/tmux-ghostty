@@ -22,24 +22,45 @@ type Paths struct {
 	BrokerBinary string
 }
 
+func NewPaths(baseDir string) Paths {
+	return Paths{
+		BaseDir:     baseDir,
+		SocketPath:  filepath.Join(baseDir, "broker.sock"),
+		PIDPath:     filepath.Join(baseDir, "broker.pid"),
+		StatePath:   filepath.Join(baseDir, "state.json"),
+		ActionsPath: filepath.Join(baseDir, "actions.json"),
+		LogPath:     filepath.Join(baseDir, "broker.log"),
+	}
+}
+
 func DefaultPaths() (Paths, error) {
+	baseDir, err := DefaultBaseDir()
+	if err != nil {
+		return Paths{}, err
+	}
+	paths := NewPaths(baseDir)
+	paths.BrokerBinary = os.Getenv("TMUX_GHOSTTY_BROKER_BIN")
+	return paths, nil
+}
+
+func DefaultBaseDir() (string, error) {
 	baseDir := os.Getenv("TMUX_GHOSTTY_HOME")
 	if baseDir == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return Paths{}, fmt.Errorf("resolve user home: %w", err)
+			return "", fmt.Errorf("resolve user home: %w", err)
 		}
-		baseDir = filepath.Join(homeDir, "Library", "Application Support", "tmux-ghostty")
+		baseDir = BaseDirForHomeDir(homeDir)
 	}
-	return Paths{
-		BaseDir:      baseDir,
-		SocketPath:   filepath.Join(baseDir, "broker.sock"),
-		PIDPath:      filepath.Join(baseDir, "broker.pid"),
-		StatePath:    filepath.Join(baseDir, "state.json"),
-		ActionsPath:  filepath.Join(baseDir, "actions.json"),
-		LogPath:      filepath.Join(baseDir, "broker.log"),
-		BrokerBinary: os.Getenv("TMUX_GHOSTTY_BROKER_BIN"),
-	}, nil
+	return baseDir, nil
+}
+
+func BaseDirForHomeDir(homeDir string) string {
+	return filepath.Join(homeDir, "Library", "Application Support", "tmux-ghostty")
+}
+
+func PathsForHomeDir(homeDir string) Paths {
+	return NewPaths(BaseDirForHomeDir(homeDir))
 }
 
 func (p Paths) EnsureBaseDir() error {

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/guyuanshun/tmux-ghostty/internal/buildinfo"
+	"github.com/guyuanshun/tmux-ghostty/internal/install"
 )
 
 func TestRunHelpOutputsUsageToStdout(t *testing.T) {
@@ -53,6 +57,42 @@ func TestRunUnknownCommandOutputsUsageToStderr(t *testing.T) {
 	}
 	if stderr != usageText+"\n" {
 		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestRunVersionOutputsBuildInfo(t *testing.T) {
+	stdout, stderr, code := captureRunOutput(t, []string{"version"})
+	if code != 0 {
+		t.Fatalf("run(version) = %d, want 0", code)
+	}
+	if stderr != "" {
+		t.Fatalf("expected no stderr, got %q", stderr)
+	}
+
+	var got struct {
+		Version     string `json:"version"`
+		Commit      string `json:"commit"`
+		BuildDate   string `json:"build_date"`
+		ReleaseRepo string `json:"release_repo"`
+		PackageID   string `json:"package_id"`
+		InstallDir  string `json:"install_dir"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("unmarshal version output: %v", err)
+	}
+
+	info := buildinfo.Current()
+	if got.Version != info.Version || got.Commit != info.Commit || got.BuildDate != info.BuildDate {
+		t.Fatalf("unexpected version output: %#v", got)
+	}
+	if got.ReleaseRepo != install.ReleaseRepo() {
+		t.Fatalf("unexpected release repo: %#v", got)
+	}
+	if got.PackageID != install.PackageID() {
+		t.Fatalf("unexpected package id: %#v", got)
+	}
+	if got.InstallDir != install.InstallDir() {
+		t.Fatalf("unexpected install dir: %#v", got)
 	}
 }
 

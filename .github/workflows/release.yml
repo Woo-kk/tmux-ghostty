@@ -1,0 +1,61 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Import Apple signing certificates
+        env:
+          APPLE_DEVELOPER_ID_APP_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_APP_CERT_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_APP_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APP_CERT_PASSWORD }}
+          APPLE_DEVELOPER_ID_INSTALLER_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_INSTALLER_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT_PASSWORD }}
+        run: ./scripts/import-apple-certs.sh
+
+      - name: Build universal binaries
+        env:
+          TMUX_GHOSTTY_RELEASE_REPO: ${{ github.repository }}
+          TMUX_GHOSTTY_PACKAGE_ID: com.guyuanshun.tmux-ghostty
+          APPLE_DEVELOPER_ID_APP_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APP_SIGNING_IDENTITY }}
+          REQUIRE_SIGNING: "1"
+        run: ./scripts/build-release.sh "${GITHUB_REF_NAME}"
+
+      - name: Build signed and notarized pkg
+        env:
+          TMUX_GHOSTTY_PACKAGE_ID: com.guyuanshun.tmux-ghostty
+          APPLE_DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_SIGNING_IDENTITY }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          REQUIRE_SIGNING: "1"
+          REQUIRE_NOTARIZATION: "1"
+        run: ./scripts/build-pkg.sh "${GITHUB_REF_NAME}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/${{ github.ref_name }}/tmux-ghostty_${{ github.ref_name }}_darwin_universal.pkg
+            dist/release/${{ github.ref_name }}/tmux-ghostty_${{ github.ref_name }}_darwin_universal.tar.gz
+            dist/release/${{ github.ref_name }}/checksums.txt

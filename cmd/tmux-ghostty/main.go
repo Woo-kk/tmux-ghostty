@@ -8,11 +8,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/guyuanshun/tmux-ghostty/internal/app"
+	"github.com/guyuanshun/tmux-ghostty/internal/buildinfo"
+	"github.com/guyuanshun/tmux-ghostty/internal/install"
 	"github.com/guyuanshun/tmux-ghostty/internal/model"
 	"github.com/guyuanshun/tmux-ghostty/internal/rpc"
+	"github.com/guyuanshun/tmux-ghostty/internal/update"
 )
 
 func main() {
@@ -20,6 +29,9 @@ func main() {
 }
 
 const usageText = `Usage:
+  tmux-ghostty version
+  tmux-ghostty self-update [--check] [--version <tag>]
+  tmux-ghostty uninstall
   tmux-ghostty up
   tmux-ghostty down [--force]
   tmux-ghostty status
@@ -57,6 +69,14 @@ func run(args []string) int {
 	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		printUsage(os.Stdout)
 		return 0
+	}
+	switch args[0] {
+	case "version":
+		return runVersion(args[1:])
+	case "self-update":
+		return runSelfUpdate(context.Background(), args[1:])
+	case "uninstall":
+		return runUninstall(context.Background(), args[1:])
 	}
 
 	paths, err := app.DefaultPaths()
@@ -117,6 +137,166 @@ func run(args []string) int {
 		usage()
 		return 1
 	}
+}
+
+func runVersion(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: tmux-ghostty version")
+		return 1
+	}
+	info := buildinfo.Current()
+	printJSON(struct {
+		Version     string `json:"version"`
+		Commit      string `json:"commit"`
+		BuildDate   string `json:"build_date"`
+		ReleaseRepo string `json:"release_repo"`
+		PackageID   string `json:"package_id"`
+		InstallDir  string `json:"install_dir"`
+	}{
+		Version:     info.Version,
+		Commit:      info.Commit,
+		BuildDate:   info.BuildDate,
+		ReleaseRepo: install.ReleaseRepo(),
+		PackageID:   install.PackageID(),
+		InstallDir:  install.InstallDir(),
+	})
+	return 0
+}
+
+func runSelfUpdate(ctx context.Context, args []string) int {
+	flags := flag.NewFlagSet("self-update", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	check := flags.Bool("check", false, "check for updates without installing")
+	targetVersion := flags.String("version", "", "install a specific release tag")
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: tmux-ghostty self-update [--check] [--version <tag>]")
+		return 1
+	}
+	if runtime.GOOS != "darwin" {
+		return printError(fmt.Errorf("self-update is only supported on macOS"))
+	}
+
+	client := update.NewGitHubClient(install.ReleaseRepo())
+	var release update.Release
+	var err error
+	if strings.TrimSpace(*targetVersion) != "" {
+		release, err = client.ReleaseByTag(ctx, strings.TrimSpace(*targetVersion))
+	} else {
+		release, err = client.LatestRelease(ctx)
+	}
+	if err != nil {
+		return printError(err)
+	}
+
+	currentVersion := buildinfo.Version
+	packageAsset, checksumsAsset, err := update.FindRequiredAssets(release)
+	if err != nil {
+		return printError(err)
+	}
+
+	status := struct {
+		CurrentVersion  string `json:"current_version"`
+		TargetVersion   string `json:"target_version"`
+		UpdateAvailable bool   `json:"update_available"`
+		ReleaseRepo     string `json:"release_repo"`
+		PackageAsset    string `json:"package_asset"`
+	}{
+		CurrentVersion:  currentVersion,
+		TargetVersion:   release.TagName,
+		UpdateAvailable: currentVersion != release.TagName,
+		ReleaseRepo:     install.ReleaseRepo(),
+		PackageAsset:    packageAsset.Name,
+	}
+	if *check {
+		printJSON(status)
+		return 0
+	}
+	if !status.UpdateAvailable {
+		fmt.Printf("already up to date: %s\n", currentVersion)
+		return 0
+	}
+
+	tempDir, err := os.MkdirTemp("", "tmux-ghostty-update-*")
+	if err != nil {
+		return printError(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	packagePath := filepath.Join(tempDir, packageAsset.Name)
+	checksumsPath := filepath.Join(tempDir, checksumsAsset.Name)
+
+	fmt.Printf("downloading %s\n", packageAsset.Name)
+	if err := client.DownloadFile(ctx, packageAsset.BrowserDownloadURL, packagePath); err != nil {
+		return printError(err)
+	}
+	if err := client.DownloadFile(ctx, checksumsAsset.BrowserDownloadURL, checksumsPath); err != nil {
+		return printError(err)
+	}
+
+	checksumsData, err := os.ReadFile(checksumsPath)
+	if err != nil {
+		return printError(err)
+	}
+	expectedChecksum, ok := update.ParseChecksums(checksumsData)[packageAsset.Name]
+	if !ok {
+		return printError(fmt.Errorf("checksums.txt did not include %s", packageAsset.Name))
+	}
+	if err := update.VerifyChecksum(packagePath, expectedChecksum); err != nil {
+		return printError(err)
+	}
+
+	fmt.Printf("installing %s from %s\n", release.TagName, install.ReleaseRepo())
+	if err := installPackage(packagePath); err != nil {
+		return printError(err)
+	}
+	fmt.Printf("update installed: %s\n", release.TagName)
+	return 0
+}
+
+func runUninstall(ctx context.Context, args []string) int {
+	flags := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: tmux-ghostty uninstall")
+		return 1
+	}
+	if os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr, "uninstall requires administrator privileges; run: sudo tmux-ghostty uninstall")
+		return 1
+	}
+
+	paths, err := uninstallPaths()
+	if err != nil {
+		return printError(err)
+	}
+	if err := stopBrokerForUninstall(ctx, paths); err != nil {
+		return printError(err)
+	}
+
+	if err := removeIfExists(install.BrokerBinaryPath()); err != nil {
+		return printError(err)
+	}
+	if err := os.RemoveAll(paths.BaseDir); err != nil {
+		return printError(err)
+	}
+	if err := forgetPackageReceipt(); err != nil {
+		return printError(err)
+	}
+	if err := removeIfExists(install.MainBinaryPath()); err != nil {
+		return printError(err)
+	}
+
+	fmt.Printf("removed: %s\n", install.BrokerBinaryPath())
+	fmt.Printf("removed: %s\n", install.MainBinaryPath())
+	fmt.Printf("removed runtime data: %s\n", paths.BaseDir)
+	fmt.Printf("forgot package receipt: %s\n", install.PackageID())
+	return 0
 }
 
 func runDown(ctx context.Context, paths app.Paths, args []string) int {
@@ -430,4 +610,109 @@ func printJSON(value any) {
 func printError(err error) int {
 	fmt.Fprintln(os.Stderr, err)
 	return 1
+}
+
+func installPackage(pkgPath string) error {
+	installerPath := "/usr/sbin/installer"
+	args := []string{"-pkg", pkgPath, "-target", "/"}
+
+	var cmd *exec.Cmd
+	if os.Geteuid() == 0 {
+		cmd = exec.Command(installerPath, args...)
+	} else {
+		sudoPath, err := exec.LookPath("sudo")
+		if err != nil {
+			return fmt.Errorf("self-update requires sudo or root; install manually with: %s %s", installerPath, strings.Join(args, " "))
+		}
+		cmd = exec.Command(sudoPath, append([]string{installerPath}, args...)...)
+	}
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func uninstallPaths() (app.Paths, error) {
+	if baseDir := strings.TrimSpace(os.Getenv("TMUX_GHOSTTY_HOME")); baseDir != "" {
+		return app.NewPaths(baseDir), nil
+	}
+
+	homeDir, err := invokingUserHomeDir()
+	if err != nil {
+		return app.Paths{}, err
+	}
+	return app.PathsForHomeDir(homeDir), nil
+}
+
+func invokingUserHomeDir() (string, error) {
+	if sudoUser := strings.TrimSpace(os.Getenv("SUDO_USER")); sudoUser != "" {
+		account, err := user.Lookup(sudoUser)
+		if err == nil && strings.TrimSpace(account.HomeDir) != "" {
+			return account.HomeDir, nil
+		}
+	}
+	return os.UserHomeDir()
+}
+
+func stopBrokerForUninstall(ctx context.Context, paths app.Paths) error {
+	client := app.ConnectBroker(paths)
+	err := client.Call(ctx, "broker.shutdown", map[string]any{"force": true}, &struct{}{})
+	if err == nil {
+		return nil
+	}
+
+	var rpcErr *rpc.RPCError
+	if errors.As(err, &rpcErr) && rpcErr.Message == rpc.ReasonBrokerUnavailable {
+		return terminateBrokerFromPID(paths)
+	}
+	return err
+}
+
+func terminateBrokerFromPID(paths app.Paths) error {
+	pid, err := app.ReadPID(paths.PIDPath)
+	if err != nil || !app.ProcessAlive(pid) {
+		return nil
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !app.ProcessAlive(pid) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("broker process %d did not exit after SIGTERM", pid)
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func forgetPackageReceipt() error {
+	command := exec.Command("pkgutil", "--forget", install.PackageID())
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return nil
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "no receipt") || strings.Contains(lower, "did not find") {
+		return nil
+	}
+	return fmt.Errorf("pkgutil --forget %s failed: %s", install.PackageID(), trimmed)
 }
