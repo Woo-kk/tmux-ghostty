@@ -2,7 +2,7 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-`tmux-ghostty` 是一个本地 macOS 工具：把 Ghostty 作为用户可见的终端前端，把 `tmux` 作为用户与 agent 共同读取和控制的共享文本事实源。
+`tmux-ghostty` 是一个本地 macOS 工具：Ghostty 只负责用户可见的终端 UI，`tmux` 负责真实的文本/数据传递，并作为用户与 agent 共同读取和控制的共享文本事实源。
 
 ## v1 包含内容
 
@@ -108,6 +108,6 @@ broker.log
 
 ## 说明
 
-- Ghostty 只被当作可见前端使用。快照文本来自本地 `tmux`，而不是 Ghostty 的内容 API。
+- Ghostty 只被当作可见前端使用。真正的文本/数据传递由 `tmux` 负责，所以快照文本来自本地 `tmux`，而不是 Ghostty 的内容 API。
 - JumpServer 适配层默认假设本机已有 `/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh`；如果需要，可通过 `TMUX_GHOSTTY_JUMP_RUNNER` 覆盖。
 - 当前测试套件使用真实本地 `tmux` 加 fake Ghostty 编排，因此自动化测试时不会真的弹出 GUI 窗口。

@@ -2,7 +2,7 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-`tmux-ghostty` is a local macOS tool that treats Ghostty as the visible terminal frontend and `tmux` as the shared text source that both the user and an agent can observe and control.
+`tmux-ghostty` is a local macOS tool that uses Ghostty only as the visible terminal UI, while `tmux` handles the real text/data path and remains the shared text source that both the user and an agent can observe and control.
 
 ## What v1 Implements
 
@@ -108,6 +108,6 @@ Useful environment variables:
 
 ## Notes
 
-- Ghostty is treated as the visible frontend only. Snapshot text comes from local `tmux`, not from Ghostty content APIs.
+- Ghostty is treated as the visible frontend only. `tmux` carries the actual text/data flow, so snapshot text comes from local `tmux`, not from Ghostty content APIs.
 - The JumpServer adapter assumes the existing local runner at `/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh` unless overridden by `TMUX_GHOSTTY_JUMP_RUNNER`.
 - The current test suite uses real local `tmux` and fake Ghostty orchestration so it does not spawn GUI windows during automated runs.

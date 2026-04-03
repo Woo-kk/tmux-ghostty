@@ -83,7 +83,11 @@ tell application id "` + appBundleID + `"
   set win to new window with configuration cfg
   set tabRef to selected tab of win
   set termRef to focused terminal of tabRef
-  return joinFields({id of win, name of win, id of tabRef, id of termRef, name of termRef, safeWorkingDirectory(termRef)})
+  set cwd to ""
+  try
+    set cwd to working directory of termRef
+  end try
+  return my joinFields({id of win, name of win, id of tabRef, id of termRef, name of termRef, cwd})
 end tell
 `))
 	if err != nil {
@@ -115,7 +119,11 @@ tell application id "` + appBundleID + `"
   set wait after command of cfg to true
   set tabRef to new tab in win with configuration cfg
   set termRef to focused terminal of tabRef
-  return joinFields({id of tabRef, name of tabRef, (index of tabRef) as text, boolText(selected of tabRef), id of termRef, name of termRef, safeWorkingDirectory(termRef)})
+  set cwd to ""
+  try
+    set cwd to working directory of termRef
+  end try
+  return my joinFields({id of tabRef, name of tabRef, (index of tabRef) as text, my boolText(selected of tabRef), id of termRef, name of termRef, cwd})
 end tell
 `))
 	if err != nil {
@@ -154,7 +162,11 @@ tell application id "` + appBundleID + `"
   set command of cfg to "` + appleScriptQuote(initialCommand) + `"
   set wait after command of cfg to true
   set newTerm to split termRef direction ` + dir + ` with configuration cfg
-  return joinFields({id of newTerm, name of newTerm, safeWorkingDirectory(newTerm)})
+  set cwd to ""
+  try
+    set cwd to working directory of newTerm
+  end try
+  return my joinFields({id of newTerm, name of newTerm, cwd})
 end tell
 `))
 	if err != nil {
@@ -207,9 +219,9 @@ func (c *Client) ListWindows() ([]WindowRef, error) {
 tell application id "` + appBundleID + `"
   set rows to {}
   repeat with win in windows
-    set end of rows to joinFields({id of win, name of win, id of selected tab of win})
+    set end of rows to my joinFields({id of win, name of win, id of selected tab of win})
   end repeat
-  return joinRows(rows)
+  return my joinRows(rows)
 end tell
 `))
 	if err != nil {
@@ -244,9 +256,9 @@ tell application id "` + appBundleID + `"
     try
       set focusedID to id of focused terminal of tabRef
     end try
-    set end of rows to joinFields({id of tabRef, name of tabRef, (index of tabRef) as text, boolText(selected of tabRef), focusedID})
+    set end of rows to my joinFields({id of tabRef, name of tabRef, (index of tabRef) as text, my boolText(selected of tabRef), focusedID})
   end repeat
-  return joinRows(rows)
+  return my joinRows(rows)
 end tell
 `))
 	if err != nil {
@@ -279,9 +291,13 @@ tell application id "` + appBundleID + `"
   set targetTab to first tab whose id is "` + appleScriptQuote(tabID) + `"
   set rows to {}
   repeat with termRef in terminals of targetTab
-    set end of rows to joinFields({id of termRef, name of termRef, safeWorkingDirectory(termRef)})
+    set cwd to ""
+    try
+      set cwd to working directory of termRef
+    end try
+    set end of rows to my joinFields({id of termRef, name of termRef, cwd})
   end repeat
-  return joinRows(rows)
+  return my joinRows(rows)
 end tell
 `))
 	if err != nil {
@@ -350,14 +366,6 @@ on joinRows(rowList)
   set AppleScript's text item delimiters to oldTIDs
   return joinedValue
 end joinRows
-
-on safeWorkingDirectory(termRef)
-  try
-    return working directory of termRef
-  on error
-    return ""
-  end try
-end safeWorkingDirectory
 
 ` + body
 }
