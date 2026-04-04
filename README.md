@@ -114,6 +114,50 @@ tmux-ghostty help
 
 ## Install, Update, Uninstall
 
+`tmux-ghostty` currently supports 4 install paths:
+
+- `Homebrew`: best for end users who want `brew upgrade` and `brew uninstall`
+- macOS `.pkg`: best for direct GUI/package installation from GitHub Releases
+- `tar.gz`: best for script-based installation without Homebrew
+- source build: best for local development or custom packaging
+
+### Install with Homebrew
+
+End-user install flow:
+
+```bash
+brew tap Woo-kk/tmux-ghostty
+brew install tmux-ghostty
+brew upgrade tmux-ghostty
+brew uninstall tmux-ghostty
+```
+
+When installed by Homebrew, `tmux-ghostty self-update` and `tmux-ghostty uninstall` are intentionally blocked. Users should use `brew upgrade tmux-ghostty` and `brew uninstall tmux-ghostty` instead.
+
+### Install with macOS pkg
+
+Download `tmux-ghostty_<version>_darwin_universal.pkg` from GitHub Releases, or install it directly:
+
+```bash
+sudo /usr/sbin/installer -pkg tmux-ghostty_<version>_darwin_universal.pkg -target /
+```
+
+The packaged macOS installer places both binaries in:
+
+```text
+/usr/local/bin/tmux-ghostty
+/usr/local/bin/tmux-ghostty-broker
+```
+
+Typical lifecycle:
+
+```bash
+tmux-ghostty version
+tmux-ghostty self-update --check
+tmux-ghostty self-update
+sudo tmux-ghostty uninstall
+```
+
 ### Install from tarball
 
 You can install from the release tarball without building or using a `.pkg`:
@@ -128,7 +172,23 @@ Or install from a locally built archive:
 ./scripts/install-tarball.sh --archive dist/release/v0.1.0/tmux-ghostty_v0.1.0_darwin_universal.tar.gz
 ```
 
-### Install with Homebrew
+### Build from source
+
+For local development or custom packaging:
+
+```bash
+go build ./cmd/tmux-ghostty
+go build ./cmd/tmux-ghostty-broker
+```
+
+If you want to install the locally built binaries into `/usr/local/bin`:
+
+```bash
+sudo install -m 0755 ./tmux-ghostty /usr/local/bin/tmux-ghostty
+sudo install -m 0755 ./tmux-ghostty-broker /usr/local/bin/tmux-ghostty-broker
+```
+
+### Publish with Homebrew
 
 This repository can generate a ready-to-publish Homebrew formula file:
 
@@ -170,39 +230,11 @@ HOMEBREW_TAP_TOKEN=<token> \
 make publish-homebrew-tap VERSION=v0.1.0
 ```
 
-Once the tap exists, the end-user flow is:
-
-```bash
-brew tap Woo-kk/tmux-ghostty
-brew install tmux-ghostty
-brew upgrade tmux-ghostty
-brew uninstall tmux-ghostty
-```
-
-The packaged macOS installer places both binaries in:
-
-```text
-/usr/local/bin/tmux-ghostty
-/usr/local/bin/tmux-ghostty-broker
-```
-
-Typical lifecycle:
-
-```bash
-sudo /usr/sbin/installer -pkg tmux-ghostty_<version>_darwin_universal.pkg -target /
-tmux-ghostty version
-tmux-ghostty self-update --check
-tmux-ghostty self-update
-sudo tmux-ghostty uninstall
-```
-
 `tmux-ghostty uninstall` removes:
 
 - `/usr/local/bin/tmux-ghostty`
 - `/usr/local/bin/tmux-ghostty-broker`
 - `~/Library/Application Support/tmux-ghostty/`
-
-When installed by Homebrew, `tmux-ghostty self-update` and `tmux-ghostty uninstall` are intentionally blocked. Users should use `brew upgrade tmux-ghostty` and `brew uninstall tmux-ghostty` instead.
 
 ## Command Risk Levels
 

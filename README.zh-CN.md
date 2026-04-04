@@ -114,6 +114,50 @@ tmux-ghostty help
 
 ## 安装、升级、卸载
 
+`tmux-ghostty` 目前支持 4 种安装方式：
+
+- `Homebrew`：最适合终端用户，后续可以直接 `brew upgrade` 和 `brew uninstall`
+- macOS `.pkg`：最适合从 GitHub Releases 直接下载安装包
+- `tar.gz`：最适合不用 Homebrew 的脚本化安装
+- 源码构建：最适合本地开发或自定义打包
+
+### 用 Homebrew 安装
+
+终端用户安装方式：
+
+```bash
+brew tap Woo-kk/tmux-ghostty
+brew install tmux-ghostty
+brew upgrade tmux-ghostty
+brew uninstall tmux-ghostty
+```
+
+如果是通过 Homebrew 安装，`tmux-ghostty self-update` 和 `tmux-ghostty uninstall` 会被主动拦住。此时应使用 `brew upgrade tmux-ghostty` 和 `brew uninstall tmux-ghostty`。
+
+### 用 macOS pkg 安装
+
+从 GitHub Releases 下载 `tmux-ghostty_<version>_darwin_universal.pkg`，或者直接执行：
+
+```bash
+sudo /usr/sbin/installer -pkg tmux-ghostty_<version>_darwin_universal.pkg -target /
+```
+
+macOS 安装包会把两个二进制放到：
+
+```text
+/usr/local/bin/tmux-ghostty
+/usr/local/bin/tmux-ghostty-broker
+```
+
+典型使用流程：
+
+```bash
+tmux-ghostty version
+tmux-ghostty self-update --check
+tmux-ghostty self-update
+sudo tmux-ghostty uninstall
+```
+
 ### 用 tar.gz 安装
 
 你可以不走 `.pkg`，直接通过 release tarball 安装：
@@ -128,7 +172,23 @@ tmux-ghostty help
 ./scripts/install-tarball.sh --archive dist/release/v0.1.0/tmux-ghostty_v0.1.0_darwin_universal.tar.gz
 ```
 
-### 用 Homebrew 安装
+### 用源码构建安装
+
+适合本地开发或自定义打包：
+
+```bash
+go build ./cmd/tmux-ghostty
+go build ./cmd/tmux-ghostty-broker
+```
+
+如果你要把本地构建出的二进制安装到 `/usr/local/bin`：
+
+```bash
+sudo install -m 0755 ./tmux-ghostty /usr/local/bin/tmux-ghostty
+sudo install -m 0755 ./tmux-ghostty-broker /usr/local/bin/tmux-ghostty-broker
+```
+
+### 用 Homebrew 发布
 
 这个仓库现在可以生成一个可发布的 Homebrew formula 文件：
 
@@ -170,39 +230,11 @@ HOMEBREW_TAP_TOKEN=<token> \
 make publish-homebrew-tap VERSION=v0.1.0
 ```
 
-tap 准备好之后，终端用户的使用方式是：
-
-```bash
-brew tap Woo-kk/tmux-ghostty
-brew install tmux-ghostty
-brew upgrade tmux-ghostty
-brew uninstall tmux-ghostty
-```
-
-macOS 安装包会把两个二进制放到：
-
-```text
-/usr/local/bin/tmux-ghostty
-/usr/local/bin/tmux-ghostty-broker
-```
-
-典型使用流程：
-
-```bash
-sudo /usr/sbin/installer -pkg tmux-ghostty_<version>_darwin_universal.pkg -target /
-tmux-ghostty version
-tmux-ghostty self-update --check
-tmux-ghostty self-update
-sudo tmux-ghostty uninstall
-```
-
 `tmux-ghostty uninstall` 会删除：
 
 - `/usr/local/bin/tmux-ghostty`
 - `/usr/local/bin/tmux-ghostty-broker`
 - `~/Library/Application Support/tmux-ghostty/`
-
-如果是通过 Homebrew 安装，`tmux-ghostty self-update` 和 `tmux-ghostty uninstall` 会被主动拦住。此时应使用 `brew upgrade tmux-ghostty` 和 `brew uninstall tmux-ghostty`。
 
 ## 命令分级
 
