@@ -27,7 +27,7 @@ func TestRunHelpOutputsUsageToStdout(t *testing.T) {
 			if stderr != "" {
 				t.Fatalf("expected no stderr for %v, got %q", args, stderr)
 			}
-			if stdout != usageText+"\n" {
+			if stdout != helpText+"\n" {
 				t.Fatalf("unexpected stdout for %v: %q", args, stdout)
 			}
 		})

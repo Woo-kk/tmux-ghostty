@@ -51,7 +51,80 @@ const usageText = `Usage:
   tmux-ghostty deny <action-id>
   tmux-ghostty command preview <pane-id> <command...>
   tmux-ghostty command send <pane-id> <command...>
-  tmux-ghostty help`
+  tmux-ghostty help
+
+Run "tmux-ghostty help" for detailed command descriptions.`
+
+const helpText = `tmux-ghostty
+
+Ghostty is the visible terminal UI. tmux carries the shared text/session state that both the user and the agent operate on.
+
+Lifecycle:
+  tmux-ghostty help
+      Print this help text.
+  tmux-ghostty version
+      Print build metadata, release repo, install dir, current binary path, and installation method.
+  tmux-ghostty self-update [--check] [--version <tag>]
+      Check for or install a GitHub Release package. macOS only. Disabled for Homebrew installs.
+  tmux-ghostty uninstall
+      Remove installed binaries and runtime data. For direct installs this normally requires sudo.
+
+Broker:
+  tmux-ghostty up
+      Start the local broker if needed and report the broker socket path.
+  tmux-ghostty down [--force]
+      Stop the local broker. Use --force to shut it down even when workspaces are still active.
+  tmux-ghostty status
+      Print broker status as JSON.
+
+Workspace:
+  tmux-ghostty workspace create
+      Create a workspace and its first pane.
+  tmux-ghostty workspace reconcile
+      Rebuild workspace state from the current Ghostty/tmux view.
+  tmux-ghostty workspace close <workspace-id>
+      Close a workspace and all panes that belong to it.
+
+Pane:
+  tmux-ghostty pane list
+      List panes as JSON.
+  tmux-ghostty pane focus <pane-id>
+      Focus the pane in Ghostty.
+  tmux-ghostty pane snapshot <pane-id>
+      Capture pane text and metadata from tmux.
+
+Host:
+  tmux-ghostty host attach <pane-id> <query>
+      Search JumpServer and attach the pane to the selected remote host/session.
+
+Control:
+  tmux-ghostty claim <pane-id> --actor agent|user
+      Give control of the pane to the selected actor.
+  tmux-ghostty release <pane-id>
+      Release control of the pane.
+  tmux-ghostty interrupt <pane-id>
+      Interrupt the running command in the pane.
+  tmux-ghostty observe <pane-id>
+      Put the pane into observe-only mode.
+
+Approvals:
+  tmux-ghostty actions
+      List queued approval actions as JSON.
+  tmux-ghostty approve <action-id>
+      Approve a queued risky command.
+  tmux-ghostty deny <action-id>
+      Deny a queued risky command.
+
+Commands:
+  tmux-ghostty command preview <pane-id> <command...>
+      Classify a command and show whether approval is required before execution.
+  tmux-ghostty command send <pane-id> <command...>
+      Send a command to the pane. Risky commands must be approved first.
+
+Notes:
+  - Most workspace, pane, host, control, and command subcommands auto-start the local broker.
+  - Most query-style commands print JSON.
+  - Use "tmux-ghostty command preview" before "command send" when you are unsure whether a command is risky.`
 
 func run(args []string) int {
 	if len(args) > 0 && args[0] == "serve-broker" {
@@ -67,7 +140,7 @@ func run(args []string) int {
 		return 1
 	}
 	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
-		printUsage(os.Stdout)
+		printHelp(os.Stdout)
 		return 0
 	}
 	switch args[0] {
@@ -607,6 +680,10 @@ func usage() {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, usageText)
+}
+
+func printHelp(w io.Writer) {
+	fmt.Fprintln(w, helpText)
 }
 
 func printJSON(value any) {
