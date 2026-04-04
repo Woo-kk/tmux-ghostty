@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/buildinfo"
+	"github.com/Woo-kk/tmux-ghostty/internal/buildinfo"
 )
 
 const (

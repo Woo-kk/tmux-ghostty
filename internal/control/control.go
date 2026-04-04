@@ -3,7 +3,7 @@ package control
 import (
 	"fmt"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/model"
 )
 
 func Claim(pane model.Pane, actor model.Controller) model.Pane {

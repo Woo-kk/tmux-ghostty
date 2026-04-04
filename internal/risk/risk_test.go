@@ -3,7 +3,7 @@ package risk
 import (
 	"testing"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/model"
 )
 
 func TestClassify(t *testing.T) {

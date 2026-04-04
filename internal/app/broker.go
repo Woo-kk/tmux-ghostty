@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/rpc"
+	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
 )
 
 func EnsureBroker(ctx context.Context, paths Paths) (*rpc.Client, error) {

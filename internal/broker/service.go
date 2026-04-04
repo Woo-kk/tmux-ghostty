@@ -9,16 +9,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/control"
-	"github.com/guyuanshun/tmux-ghostty/internal/execx"
-	"github.com/guyuanshun/tmux-ghostty/internal/ghostty"
-	"github.com/guyuanshun/tmux-ghostty/internal/jump"
-	"github.com/guyuanshun/tmux-ghostty/internal/logx"
-	"github.com/guyuanshun/tmux-ghostty/internal/model"
-	"github.com/guyuanshun/tmux-ghostty/internal/observe"
-	"github.com/guyuanshun/tmux-ghostty/internal/risk"
-	"github.com/guyuanshun/tmux-ghostty/internal/rpc"
-	"github.com/guyuanshun/tmux-ghostty/internal/store"
+	"github.com/Woo-kk/tmux-ghostty/internal/control"
+	"github.com/Woo-kk/tmux-ghostty/internal/execx"
+	"github.com/Woo-kk/tmux-ghostty/internal/ghostty"
+	"github.com/Woo-kk/tmux-ghostty/internal/jump"
+	"github.com/Woo-kk/tmux-ghostty/internal/logx"
+	"github.com/Woo-kk/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/observe"
+	"github.com/Woo-kk/tmux-ghostty/internal/risk"
+	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
+	"github.com/Woo-kk/tmux-ghostty/internal/store"
 )
 
 type GhosttyClient interface {

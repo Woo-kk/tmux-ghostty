@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/model"
 )
 
 type Store struct {

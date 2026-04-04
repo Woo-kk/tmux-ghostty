@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-RELEASE_REPO="${TMUX_GHOSTTY_RELEASE_REPO:-Woo-kk/tumx-ghostty}"
+RELEASE_REPO="${TMUX_GHOSTTY_RELEASE_REPO:-Woo-kk/tmux-ghostty}"
 INSTALL_DIR="${TMUX_GHOSTTY_INSTALL_DIR:-/usr/local/bin}"
 VERSION=""
 ARCHIVE_PATH=""

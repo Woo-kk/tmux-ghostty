@@ -12,7 +12,7 @@ var (
 	Version     = "dev"
 	Commit      = "unknown"
 	BuildDate   = "unknown"
-	ReleaseRepo = "Woo-kk/tumx-ghostty"
+	ReleaseRepo = "Woo-kk/tmux-ghostty"
 	PackageID   = "com.guyuanshun.tmux-ghostty"
 )
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/execx"
+	"github.com/Woo-kk/tmux-ghostty/internal/execx"
 )
 
 const (

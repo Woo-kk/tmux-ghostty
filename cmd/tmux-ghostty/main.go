@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/app"
-	"github.com/guyuanshun/tmux-ghostty/internal/buildinfo"
-	"github.com/guyuanshun/tmux-ghostty/internal/install"
-	"github.com/guyuanshun/tmux-ghostty/internal/model"
-	"github.com/guyuanshun/tmux-ghostty/internal/rpc"
-	"github.com/guyuanshun/tmux-ghostty/internal/update"
+	"github.com/Woo-kk/tmux-ghostty/internal/app"
+	"github.com/Woo-kk/tmux-ghostty/internal/buildinfo"
+	"github.com/Woo-kk/tmux-ghostty/internal/install"
+	"github.com/Woo-kk/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
+	"github.com/Woo-kk/tmux-ghostty/internal/update"
 )
 
 func main() {

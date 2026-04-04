@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/app"
+	"github.com/Woo-kk/tmux-ghostty/internal/app"
 )
 
 func main() {

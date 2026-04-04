@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/buildinfo"
-	"github.com/guyuanshun/tmux-ghostty/internal/install"
+	"github.com/Woo-kk/tmux-ghostty/internal/buildinfo"
+	"github.com/Woo-kk/tmux-ghostty/internal/install"
 )
 
 func TestRunHelpOutputsUsageToStdout(t *testing.T) {

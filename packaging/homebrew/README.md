@@ -37,7 +37,7 @@ Optional workflow variables:
 - `HOMEBREW_TAP_FORMULA_PATH=Formula/tmux-ghostty.rb`
 - `TMUX_GHOSTTY_HOMEBREW_FORMULA=tmux-ghostty`
 - `TMUX_GHOSTTY_HOMEBREW_CLASS=TmuxGhostty`
-- `TMUX_GHOSTTY_HOMEBREW_HOMEPAGE=https://github.com/Woo-kk/tumx-ghostty`
+- `TMUX_GHOSTTY_HOMEBREW_HOMEPAGE=https://github.com/Woo-kk/tmux-ghostty`
 - `TMUX_GHOSTTY_HOMEBREW_DESC=Shared terminal broker for Ghostty powered by tmux`
 
 After that, the existing tag-based release workflow in this repository can publish the generated formula into the tap repo automatically.

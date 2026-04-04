@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/execx"
-	"github.com/guyuanshun/tmux-ghostty/internal/ghostty"
-	"github.com/guyuanshun/tmux-ghostty/internal/jump"
-	"github.com/guyuanshun/tmux-ghostty/internal/logx"
-	"github.com/guyuanshun/tmux-ghostty/internal/model"
-	"github.com/guyuanshun/tmux-ghostty/internal/rpc"
-	"github.com/guyuanshun/tmux-ghostty/internal/tmux"
+	"github.com/Woo-kk/tmux-ghostty/internal/execx"
+	"github.com/Woo-kk/tmux-ghostty/internal/ghostty"
+	"github.com/Woo-kk/tmux-ghostty/internal/jump"
+	"github.com/Woo-kk/tmux-ghostty/internal/logx"
+	"github.com/Woo-kk/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
+	"github.com/Woo-kk/tmux-ghostty/internal/tmux"
 )
 
 type fakeGhosttyClient struct {
@@ -153,6 +153,10 @@ func TestCommandFlowWithTmux(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	service.Start(ctx)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
 
 	created, err := service.CreateWorkspace()
 	if err != nil {
@@ -169,7 +173,7 @@ func TestCommandFlowWithTmux(t *testing.T) {
 	if _, err := service.SendCommand(pane.ID, "agent", "pwd", ""); err != nil {
 		t.Fatalf("send pwd: %v", err)
 	}
-	if _, err := waitForSnapshot(t, service, pane.ID, "/Users/guyuanshun/go/src/tumx-ghostty"); err != nil {
+	if _, err := waitForSnapshot(t, service, pane.ID, cwd); err != nil {
 		t.Fatalf("wait for pwd output: %v", err)
 	}
 

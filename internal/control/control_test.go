@@ -3,7 +3,7 @@ package control
 import (
 	"testing"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/model"
 )
 
 func TestClaimReleaseObserve(t *testing.T) {

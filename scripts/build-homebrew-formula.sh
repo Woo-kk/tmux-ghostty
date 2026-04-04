@@ -4,7 +4,7 @@ set -euo pipefail
 VERSION="${1:?version is required}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist/release/$VERSION}"
-RELEASE_REPO="${TMUX_GHOSTTY_RELEASE_REPO:-Woo-kk/tumx-ghostty}"
+RELEASE_REPO="${TMUX_GHOSTTY_RELEASE_REPO:-Woo-kk/tmux-ghostty}"
 FORMULA_NAME="${TMUX_GHOSTTY_HOMEBREW_FORMULA:-tmux-ghostty}"
 FORMULA_CLASS="${TMUX_GHOSTTY_HOMEBREW_CLASS:-}"
 HOMEPAGE="${TMUX_GHOSTTY_HOMEBREW_HOMEPAGE:-https://github.com/$RELEASE_REPO}"

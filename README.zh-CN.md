@@ -159,7 +159,7 @@ Homebrew 发布需要额外配置这些内容：
 - `HOMEBREW_TAP_FORMULA_PATH=Formula/tmux-ghostty.rb`
 - `TMUX_GHOSTTY_HOMEBREW_FORMULA=tmux-ghostty`
 - `TMUX_GHOSTTY_HOMEBREW_CLASS=TmuxGhostty`
-- `TMUX_GHOSTTY_HOMEBREW_HOMEPAGE=https://github.com/Woo-kk/tumx-ghostty`
+- `TMUX_GHOSTTY_HOMEBREW_HOMEPAGE=https://github.com/Woo-kk/tmux-ghostty`
 - `TMUX_GHOSTTY_HOMEBREW_DESC=Shared terminal broker for Ghostty powered by tmux`
 
 这些配好后，现有的 release workflow 会在每次打 tag 发布后，自动把生成出的 formula 同步到 tap 仓库。若你要在本地手动推送，可以执行：

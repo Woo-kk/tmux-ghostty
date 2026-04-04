@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/rpc"
+	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
 )
 
 type BrokerError struct {

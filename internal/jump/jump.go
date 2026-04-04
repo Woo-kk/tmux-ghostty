@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/execx"
-	"github.com/guyuanshun/tmux-ghostty/internal/tmux"
+	"github.com/Woo-kk/tmux-ghostty/internal/execx"
+	"github.com/Woo-kk/tmux-ghostty/internal/tmux"
 )
 
 const (

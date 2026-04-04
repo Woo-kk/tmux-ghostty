@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/model"
 )
 
 var shellCombinerRE = regexp.MustCompile(`(\|\||&&|;|\||>>|>|<<|<|\n|\r|\$\(|` + "`" + `)`)

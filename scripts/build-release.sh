@@ -4,14 +4,14 @@ set -euo pipefail
 VERSION="${1:-dev}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist/release/$VERSION}"
-RELEASE_REPO="${TMUX_GHOSTTY_RELEASE_REPO:-Woo-kk/tumx-ghostty}"
+RELEASE_REPO="${TMUX_GHOSTTY_RELEASE_REPO:-Woo-kk/tmux-ghostty}"
 PACKAGE_ID="${TMUX_GHOSTTY_PACKAGE_ID:-com.guyuanshun.tmux-ghostty}"
 SIGNING_IDENTITY="${APPLE_DEVELOPER_ID_APP_SIGNING_IDENTITY:-}"
 REQUIRE_SIGNING="${REQUIRE_SIGNING:-0}"
 COMMIT="${GIT_COMMIT:-$(git -C "$ROOT_DIR" rev-parse --short HEAD)}"
 BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 ARCHIVE_NAME="tmux-ghostty_${VERSION}_darwin_universal.tar.gz"
-LDFLAGS="-X github.com/guyuanshun/tmux-ghostty/internal/buildinfo.Version=${VERSION} -X github.com/guyuanshun/tmux-ghostty/internal/buildinfo.Commit=${COMMIT} -X github.com/guyuanshun/tmux-ghostty/internal/buildinfo.BuildDate=${BUILD_DATE} -X github.com/guyuanshun/tmux-ghostty/internal/buildinfo.ReleaseRepo=${RELEASE_REPO} -X github.com/guyuanshun/tmux-ghostty/internal/buildinfo.PackageID=${PACKAGE_ID}"
+LDFLAGS="-X github.com/Woo-kk/tmux-ghostty/internal/buildinfo.Version=${VERSION} -X github.com/Woo-kk/tmux-ghostty/internal/buildinfo.Commit=${COMMIT} -X github.com/Woo-kk/tmux-ghostty/internal/buildinfo.BuildDate=${BUILD_DATE} -X github.com/Woo-kk/tmux-ghostty/internal/buildinfo.ReleaseRepo=${RELEASE_REPO} -X github.com/Woo-kk/tmux-ghostty/internal/buildinfo.PackageID=${PACKAGE_ID}"
 
 export COPYFILE_DISABLE=1
 

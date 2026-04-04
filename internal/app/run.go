@@ -6,13 +6,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/broker"
-	"github.com/guyuanshun/tmux-ghostty/internal/execx"
-	"github.com/guyuanshun/tmux-ghostty/internal/ghostty"
-	"github.com/guyuanshun/tmux-ghostty/internal/jump"
-	"github.com/guyuanshun/tmux-ghostty/internal/logx"
-	"github.com/guyuanshun/tmux-ghostty/internal/rpc"
-	"github.com/guyuanshun/tmux-ghostty/internal/tmux"
+	"github.com/Woo-kk/tmux-ghostty/internal/broker"
+	"github.com/Woo-kk/tmux-ghostty/internal/execx"
+	"github.com/Woo-kk/tmux-ghostty/internal/ghostty"
+	"github.com/Woo-kk/tmux-ghostty/internal/jump"
+	"github.com/Woo-kk/tmux-ghostty/internal/logx"
+	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
+	"github.com/Woo-kk/tmux-ghostty/internal/tmux"
 )
 
 func RunBrokerProcess() error {

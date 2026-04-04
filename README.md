@@ -159,7 +159,7 @@ Optional configuration:
 - `HOMEBREW_TAP_FORMULA_PATH=Formula/tmux-ghostty.rb`
 - `TMUX_GHOSTTY_HOMEBREW_FORMULA=tmux-ghostty`
 - `TMUX_GHOSTTY_HOMEBREW_CLASS=TmuxGhostty`
-- `TMUX_GHOSTTY_HOMEBREW_HOMEPAGE=https://github.com/Woo-kk/tumx-ghostty`
+- `TMUX_GHOSTTY_HOMEBREW_HOMEPAGE=https://github.com/Woo-kk/tmux-ghostty`
 - `TMUX_GHOSTTY_HOMEBREW_DESC=Shared terminal broker for Ghostty powered by tmux`
 
 Once those are set, the existing release workflow can sync the formula into the tap repo automatically after each tag release. For a local/manual publish, run:

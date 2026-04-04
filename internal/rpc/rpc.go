@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/guyuanshun/tmux-ghostty/internal/logx"
+	"github.com/Woo-kk/tmux-ghostty/internal/logx"
 )
 
 const (
