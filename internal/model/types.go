@@ -19,6 +19,13 @@ const (
 	WorkspaceClosed   WorkspaceStatus = "closed"
 )
 
+type WorkspaceLaunchMode string
+
+const (
+	WorkspaceLaunchModeNewWindow     WorkspaceLaunchMode = "new_window"
+	WorkspaceLaunchModeCurrentWindow WorkspaceLaunchMode = "current_window"
+)
+
 type Controller string
 
 const (
@@ -77,12 +84,13 @@ const (
 )
 
 type Workspace struct {
-	ID              string          `json:"id"`
-	CreatedAt       time.Time       `json:"created_at"`
-	Status          WorkspaceStatus `json:"status"`
-	GhosttyWindowID string          `json:"ghostty_window_id"`
-	GhosttyTabID    string          `json:"ghostty_tab_id"`
-	PaneIDs         []string        `json:"pane_ids"`
+	ID              string              `json:"id"`
+	CreatedAt       time.Time           `json:"created_at"`
+	Status          WorkspaceStatus     `json:"status"`
+	LaunchMode      WorkspaceLaunchMode `json:"launch_mode,omitempty"`
+	GhosttyWindowID string              `json:"ghostty_window_id"`
+	GhosttyTabID    string              `json:"ghostty_tab_id"`
+	PaneIDs         []string            `json:"pane_ids"`
 }
 
 type Pane struct {
@@ -167,10 +175,11 @@ func NewState() State {
 
 func NewWorkspace() Workspace {
 	return Workspace{
-		ID:        "ws-" + randomID(),
-		CreatedAt: time.Now().UTC(),
-		Status:    WorkspaceActive,
-		PaneIDs:   []string{},
+		ID:         "ws-" + randomID(),
+		CreatedAt:  time.Now().UTC(),
+		Status:     WorkspaceActive,
+		LaunchMode: WorkspaceLaunchModeNewWindow,
+		PaneIDs:    []string{},
 	}
 }
 

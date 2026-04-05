@@ -1,6 +1,6 @@
 ---
 name: tmux-ghostty
-description: Use tmux-ghostty to manage local Ghostty/tmux workspaces, panes, current-window adoption, control handoff, approvals, and provider-based remote attachment through the local CLI and broker.
+description: Use tmux-ghostty to manage local Ghostty/tmux workspaces, current-window bootstrap/adoption, pane control handoff, approvals, and provider-based remote attachment through the local CLI and broker.
 ---
 
 # Tmux Ghostty
@@ -20,7 +20,7 @@ The help response should cover these points:
 - 这个 skill 用来通过 `tmux-ghostty` 管理本地 Ghostty + tmux 工作区、pane 控制权、命令发送和审批，以及通过远端 provider 挂接远端主机。
 - Ghostty 只是可见终端界面，真正共享的文本状态在 tmux 里，所以用户和 agent 可以围绕同一 pane 协作。
 - 多数操作会自动拉起本地 broker，不需要用户先做复杂初始化。
-- 如果用户要求“就在这个窗口里继续”，优先走 `workspace inspect-current` 和 `workspace adopt-current`，而不是默认新开窗口；这条路径失败时要明确报错，不能假装等价成功。
+- 如果用户要求“就在这个窗口里继续”，先走 `workspace inspect-current`；若已经在 tmux 中，再走 `workspace adopt-current`，若只是本地空闲 shell，则走 `workspace bootstrap-current`；这条路径失败时要明确报错，不能假装等价成功。
 - 如果不知道 pane 或 action ID，先执行 `tmux-ghostty pane list` 或 `tmux-ghostty actions`。
 
 The help response should also give a few short example requests such as:
@@ -42,7 +42,7 @@ Keep that response concise and task-oriented.
    - `tmux-ghostty status`
 3. If the user wants to stay in the current Ghostty window:
    - `tmux-ghostty workspace inspect-current`
-   - `tmux-ghostty workspace adopt-current`
+   - `tmux-ghostty workspace bootstrap-current` or `tmux-ghostty workspace adopt-current`
    - `tmux-ghostty pane split <pane-id> --direction up|down|left|right`
 4. Otherwise create a new workspace:
    - `tmux-ghostty workspace create`
@@ -57,8 +57,9 @@ Keep that response concise and task-oriented.
 
 - `workspace create`: stable path, opens a new Ghostty window.
 - `workspace inspect-current`: read-only check of the currently focused Ghostty terminal.
+- `workspace bootstrap-current`: formal path for turning a local idle shell in the current Ghostty terminal into a broker-managed tmux workspace without opening a new window.
 - `workspace adopt-current`: formal path for taking over the current Ghostty window without opening a new one.
-- `workspace reconcile`: restore already known workspaces. It does not import an unmanaged current window.
+- `workspace reconcile`: restore already known workspaces. It does not import an unmanaged current window, and it does not silently reopen a replacement window for current-window workspaces.
 - `pane split`: formal path for adding panes inside an existing workspace.
 - `host attach`: formal remote-provider attach entrypoint. The current built-in provider is JumpServer.
 - If the CLI still lacks a required capability, say so explicitly. Do not silently fall back to ad hoc `tmux` or `osascript` layout surgery.
@@ -77,11 +78,12 @@ Keep that response concise and task-oriented.
 - If the user says `当前窗口`、`这个窗口`、`不要新开窗口`、`在这里分屏`, prefer this sequence:
   - `tmux-ghostty up`
   - `tmux-ghostty workspace inspect-current`
-  - `tmux-ghostty workspace adopt-current`
+  - If `adoptable=true`, run `tmux-ghostty workspace adopt-current`
+  - If `bootstrappable=true`, run `tmux-ghostty workspace bootstrap-current`
   - `tmux-ghostty pane split <pane-id> --direction ...`
-- After `inspect-current`, tell the user whether the focused terminal is adoptable.
-- After `adopt-current`, explicitly state that this run is using the current Ghostty window.
-- If `adopt-current` fails, explain the reason and stop the current-window flow.
+- After `inspect-current`, tell the user whether the focused terminal is directly adoptable or needs bootstrap first.
+- After `bootstrap-current` or `adopt-current`, explicitly state that this run is using the current Ghostty window.
+- If `bootstrap-current` or `adopt-current` fails, explain the reason and stop the current-window flow.
 - Only switch to `workspace create` if the user explicitly accepts opening a new Ghostty window.
 
 ### 3. Workspace lifecycle
@@ -146,7 +148,7 @@ Keep that response concise and task-oriented.
 - Most query-style commands print JSON. Parse the returned structure instead of scraping prose.
 - Most operational subcommands auto-start the broker. Use `up` when you want explicit broker visibility or troubleshooting.
 - Prefer the control-safe sequence `claim` -> `command preview` -> `command send` -> `actions` -> `approve` or `deny`.
-- For current-window requests, prefer `inspect-current` -> `adopt-current` -> `pane split` before considering `workspace create`.
+- For current-window requests, prefer `inspect-current` -> (`bootstrap-current` or `adopt-current`) -> `pane split` before considering `workspace create`.
 - When the user explicitly requires the current window, do not present `workspace create` as an equivalent success path.
 - Do not bypass the approval flow for risky commands.
 - Use `pane snapshot` before and after important transitions when you need verifiable terminal state.
@@ -158,7 +160,7 @@ Keep that response concise and task-oriented.
 
 ## Downgrade Matrix
 
-- `workspace adopt-current` fails:
+- `workspace bootstrap-current` or `workspace adopt-current` fails:
   Explain the reason.
   Stop the current-window flow unless the user explicitly asks to switch to `workspace create`.
 - `host attach` fails while `stage` is `menu`, `target_search`, or `selection`:

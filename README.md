@@ -89,6 +89,7 @@ tmux-ghostty status
 
 tmux-ghostty workspace create
 tmux-ghostty workspace inspect-current
+tmux-ghostty workspace bootstrap-current
 tmux-ghostty workspace adopt-current
 tmux-ghostty workspace reconcile
 tmux-ghostty workspace close <workspace-id>
@@ -117,7 +118,7 @@ tmux-ghostty help
 
 `tmux-ghostty help` is the authoritative detailed command reference. The README keeps the high-level command tree; use the CLI for the per-command descriptions. `tmux-ghostty -h` and `tmux-ghostty --help` are equivalent aliases.
 
-`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal can be adopted into a workspace. `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. In current-window mode, the CLI no longer launches a replacement Ghostty window implicitly; if the front window, focused terminal, or tmux context is unsuitable, it fails explicitly. `tmux-ghostty pane split` is the formal way to grow an existing workspace in-place.
+`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal is directly adoptable or first needs bootstrapping. If the terminal is already inside a local tmux pane, `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. If the terminal is a local idle shell outside tmux, `tmux-ghostty workspace bootstrap-current` starts a broker-owned tmux session in place and adopts it into a current-window workspace. In current-window mode, the CLI does not silently launch or rebuild a replacement Ghostty window; if the front window, focused terminal, or tmux context is unsuitable, it fails explicitly. `tmux-ghostty pane split` is the formal way to grow an existing workspace in-place.
 
 `tmux-ghostty version` prints build metadata. `tmux-ghostty self-update` installs a GitHub Release package over the current installation. `tmux-ghostty uninstall` removes both installed binaries and the current user's runtime data.
 

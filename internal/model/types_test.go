@@ -23,3 +23,13 @@ func TestNewPaneDefaults(t *testing.T) {
 		t.Fatalf("expected default stage unknown, got %q", pane.Stage)
 	}
 }
+
+func TestNewWorkspaceDefaults(t *testing.T) {
+	workspace := NewWorkspace()
+	if workspace.Status != WorkspaceActive {
+		t.Fatalf("expected default workspace status active, got %q", workspace.Status)
+	}
+	if workspace.LaunchMode != WorkspaceLaunchModeNewWindow {
+		t.Fatalf("expected default workspace launch mode new_window, got %q", workspace.LaunchMode)
+	}
+}

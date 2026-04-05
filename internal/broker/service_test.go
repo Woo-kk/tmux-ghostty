@@ -481,6 +481,155 @@ func TestAdoptCurrentUsesRequireAvailableWithoutLaunch(t *testing.T) {
 	}
 }
 
+func TestInspectCurrentReportsBootstrappableLocalShell(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	if _, terminal, err := fakeGhostty.NewWindow(""); err != nil {
+		t.Fatalf("seed focused window: %v", err)
+	} else {
+		service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
+			if terminalID != terminal.ID {
+				t.Fatalf("unexpected terminal id: %s", terminalID)
+			}
+			return currentTerminalProbe{
+				InsideTmux:    false,
+				TmuxAvailable: true,
+			}, nil
+		}
+	}
+	fakeGhostty.newWindowCalls = 0
+
+	inspection, err := service.InspectCurrent()
+	if err != nil {
+		t.Fatalf("inspect current: %v", err)
+	}
+	if inspection.Adoptable {
+		t.Fatalf("expected current focus not to be directly adoptable")
+	}
+	if !inspection.Bootstrappable {
+		t.Fatalf("expected current focus to be bootstrappable")
+	}
+	if !strings.Contains(inspection.Reason, "workspace bootstrap-current") {
+		t.Fatalf("unexpected inspect current reason: %q", inspection.Reason)
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected inspect current not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected inspect current not to create a new window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestBootstrapCurrentUsesCurrentWindowWithoutLaunch(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	window, terminal, err := fakeGhostty.NewWindow("")
+	if err != nil {
+		t.Fatalf("seed focused window: %v", err)
+	}
+	fakeGhostty.newWindowCalls = 0
+
+	var attachCommand string
+	var bootstrappedSession string
+	fakeGhostty.inputTextHook = func(terminalID string, text string) error {
+		if terminalID != terminal.ID {
+			t.Fatalf("unexpected terminal id: %s", terminalID)
+		}
+		attachCommand = text
+		parts := strings.Split(text, "-t ")
+		if len(parts) != 2 {
+			t.Fatalf("unexpected bootstrap attach command: %q", text)
+		}
+		bootstrappedSession = strings.TrimSpace(parts[1])
+		return nil
+	}
+
+	probeCalls := 0
+	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
+		if terminalID != terminal.ID {
+			t.Fatalf("unexpected terminal id: %s", terminalID)
+		}
+		probeCalls++
+		if probeCalls == 1 {
+			return currentTerminalProbe{
+				InsideTmux:    false,
+				TmuxAvailable: true,
+			}, nil
+		}
+		if bootstrappedSession == "" {
+			t.Fatalf("expected bootstrap session to be captured before second probe")
+		}
+		return currentTerminalProbe{
+			InsideTmux:    true,
+			TmuxSession:   bootstrappedSession,
+			TmuxPane:      bootstrappedSession + ":0.0",
+			TmuxAvailable: true,
+		}, nil
+	}
+
+	result, err := service.BootstrapCurrent()
+	if err != nil {
+		t.Fatalf("bootstrap current: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(result.Workspace.ID)
+	})
+
+	if !strings.Contains(attachCommand, "exec tmux attach-session -t ") {
+		t.Fatalf("unexpected bootstrap command: %q", attachCommand)
+	}
+	if result.Workspace.GhosttyWindowID != window.ID {
+		t.Fatalf("expected bootstrapped workspace to stay in focused window")
+	}
+	if result.Workspace.LaunchMode != model.WorkspaceLaunchModeCurrentWindow {
+		t.Fatalf("expected bootstrapped workspace launch mode current_window, got %q", result.Workspace.LaunchMode)
+	}
+	if result.Pane.GhosttyTerminalID != terminal.ID {
+		t.Fatalf("expected bootstrapped pane to reuse focused terminal")
+	}
+	if result.Pane.LocalTmuxSession != bootstrappedSession {
+		t.Fatalf("unexpected bootstrapped local tmux session: %q", result.Pane.LocalTmuxSession)
+	}
+	if !result.Pane.OwnsLocalTmux {
+		t.Fatalf("expected bootstrapped pane to own its local tmux session")
+	}
+	if fakeGhostty.requireCalls == 0 {
+		t.Fatalf("expected bootstrap current to probe Ghostty availability")
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected bootstrap current not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected bootstrap current not to create a new window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestBootstrapCurrentFailsForRemoteShell(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	if _, terminal, err := fakeGhostty.NewWindow(""); err != nil {
+		t.Fatalf("seed focused window: %v", err)
+	} else {
+		service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
+			if terminalID != terminal.ID {
+				t.Fatalf("unexpected terminal id: %s", terminalID)
+			}
+			return currentTerminalProbe{
+				InsideTmux:    false,
+				RemoteShell:   true,
+				TmuxAvailable: true,
+			}, nil
+		}
+	}
+
+	if _, err := service.BootstrapCurrent(); err == nil {
+		t.Fatalf("expected bootstrap current to fail for remote shell")
+	}
+	if len(service.state.Workspaces) != 0 {
+		t.Fatalf("expected no workspace to be created for remote shell bootstrap attempt")
+	}
+}
+
 func TestAdoptCurrentFailsWhenNotInsideTmux(t *testing.T) {
 	service := newTestService(t)
 	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
@@ -699,6 +848,85 @@ func TestReconcileDoesNotImportUnmanagedCurrentWindow(t *testing.T) {
 	}
 	if len(service.state.Workspaces) != 0 || len(service.state.Panes) != 0 {
 		t.Fatalf("expected no imported state after reconcile")
+	}
+}
+
+func TestReconcileDoesNotRebuildCurrentWindowWorkspace(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+
+	workspace := model.NewWorkspace()
+	workspace.LaunchMode = model.WorkspaceLaunchModeCurrentWindow
+	workspace.GhosttyWindowID = "missing-window"
+	workspace.GhosttyTabID = "missing-tab"
+	pane := model.NewPane(workspace.ID)
+	pane.GhosttyTerminalID = "missing-terminal"
+	workspace.PaneIDs = []string{pane.ID}
+	service.state.Workspaces[workspace.ID] = workspace
+	service.state.Panes[pane.ID] = pane
+
+	workspaces, err := service.Reconcile()
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(workspaces) != 1 {
+		t.Fatalf("expected one workspace after reconcile, got %d", len(workspaces))
+	}
+	got := service.state.Workspaces[workspace.ID]
+	if got.Status != model.WorkspaceDegraded {
+		t.Fatalf("expected current-window workspace to become degraded, got %q", got.Status)
+	}
+	if got.GhosttyWindowID != "" || got.GhosttyTabID != "" {
+		t.Fatalf("expected stale current-window workspace ghostty refs to be cleared, got %+v", got)
+	}
+	if refreshed := service.state.Panes[pane.ID]; refreshed.GhosttyTerminalID != "" || refreshed.Mode != model.ModeDisconnected {
+		t.Fatalf("expected stale pane to disconnect without rebuild, got %+v", refreshed)
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected reconcile not to call EnsureRunning for current-window workspace, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected reconcile not to create a new window for current-window workspace, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestStatusSyncClearsMissingCurrentWindowTopology(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+
+	workspace := model.NewWorkspace()
+	workspace.LaunchMode = model.WorkspaceLaunchModeCurrentWindow
+	workspace.GhosttyWindowID = "missing-window"
+	workspace.GhosttyTabID = "missing-tab"
+	pane := model.NewPane(workspace.ID)
+	pane.GhosttyTerminalID = "missing-terminal"
+	workspace.PaneIDs = []string{pane.ID}
+	service.state.Workspaces[workspace.ID] = workspace
+	service.state.Panes[pane.ID] = pane
+
+	status, err := service.Status()
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.WorkspaceCount != 1 || status.PaneCount != 1 {
+		t.Fatalf("unexpected status counts: %+v", status)
+	}
+	gotWorkspace := service.state.Workspaces[workspace.ID]
+	gotPane := service.state.Panes[pane.ID]
+	if gotWorkspace.Status != model.WorkspaceDegraded {
+		t.Fatalf("expected status sync to degrade stale current-window workspace, got %q", gotWorkspace.Status)
+	}
+	if gotWorkspace.GhosttyWindowID != "" || gotWorkspace.GhosttyTabID != "" {
+		t.Fatalf("expected status sync to clear stale Ghostty refs, got %+v", gotWorkspace)
+	}
+	if gotPane.GhosttyTerminalID != "" || gotPane.Mode != model.ModeDisconnected {
+		t.Fatalf("expected status sync to disconnect stale pane, got %+v", gotPane)
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected status sync not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected status sync not to create a new window, got %d", fakeGhostty.newWindowCalls)
 	}
 }
 

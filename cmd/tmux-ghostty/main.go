@@ -331,6 +331,13 @@ func runWorkspace(ctx context.Context, paths app.Paths, args []string) int {
 		}
 		printJSON(result)
 		return 0
+	case "bootstrap-current":
+		var result any
+		if err := client.Call(ctx, "workspace.bootstrap_current", nil, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
 	case "adopt-current":
 		var result any
 		if err := client.Call(ctx, "workspace.adopt_current", nil, &result); err != nil {
