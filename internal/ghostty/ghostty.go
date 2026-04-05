@@ -38,6 +38,12 @@ type TerminalRef struct {
 	WorkingDirectory string `json:"working_directory"`
 }
 
+type FocusContext struct {
+	Window   WindowRef   `json:"window"`
+	Tab      TabRef      `json:"tab"`
+	Terminal TerminalRef `json:"terminal"`
+}
+
 type Client struct {
 	runner *execx.Runner
 }
@@ -180,6 +186,48 @@ end tell
 		ID:               fields[0],
 		Name:             fields[1],
 		WorkingDirectory: fields[2],
+	}, nil
+}
+
+func (c *Client) InspectFocused() (FocusContext, error) {
+	output, err := c.runScript(withHelpers(`
+tell application id "` + appBundleID + `"
+  set win to front window
+  if win is missing value then error "no focused Ghostty window"
+  set tabRef to selected tab of win
+  set termRef to focused terminal of tabRef
+  set cwd to ""
+  try
+    set cwd to working directory of termRef
+  end try
+  return my joinFields({id of win, name of win, id of tabRef, name of tabRef, (index of tabRef) as text, my boolText(selected of tabRef), id of termRef, name of termRef, cwd})
+end tell
+`))
+	if err != nil {
+		return FocusContext{}, err
+	}
+	fields := strings.Split(output, fieldSep)
+	if len(fields) != 9 {
+		return FocusContext{}, fmt.Errorf("unexpected ghostty response for inspect focused: %q", output)
+	}
+	return FocusContext{
+		Window: WindowRef{
+			ID:            fields[0],
+			Name:          fields[1],
+			SelectedTabID: fields[2],
+		},
+		Tab: TabRef{
+			ID:                fields[2],
+			Name:              fields[3],
+			Index:             parseInt(fields[4]),
+			Selected:          fields[5] == "true",
+			FocusedTerminalID: fields[6],
+		},
+		Terminal: TerminalRef{
+			ID:               fields[6],
+			Name:             fields[7],
+			WorkingDirectory: fields[8],
+		},
 	}, nil
 }
 

@@ -45,8 +45,8 @@ func (c *Client) KillSession(name string) error {
 	return err
 }
 
-func (c *Client) SendKeys(session string, text string) error {
-	target := paneTarget(session)
+func (c *Client) SendKeys(target string, text string) error {
+	target = normalizeTarget(target)
 	if text != "" {
 		if _, err := c.run(defaultTimeout, "send-keys", "-t", target, "-l", text); err != nil {
 			return err
@@ -56,32 +56,42 @@ func (c *Client) SendKeys(session string, text string) error {
 	return err
 }
 
-func (c *Client) SendCtrlC(session string) error {
-	_, err := c.run(defaultTimeout, "send-keys", "-t", paneTarget(session), "C-c")
+func (c *Client) SendCtrlC(target string) error {
+	_, err := c.run(defaultTimeout, "send-keys", "-t", normalizeTarget(target), "C-c")
 	return err
 }
 
-func (c *Client) CapturePane(session string, lines int) (string, error) {
+func (c *Client) CapturePane(target string, lines int) (string, error) {
 	if lines <= 0 {
 		lines = 500
 	}
-	result, err := c.run(defaultTimeout, "capture-pane", "-p", "-J", "-t", paneTarget(session), "-S", fmt.Sprintf("-%d", lines))
+	result, err := c.run(defaultTimeout, "capture-pane", "-p", "-J", "-t", normalizeTarget(target), "-S", fmt.Sprintf("-%d", lines))
 	if err != nil {
 		return "", err
 	}
 	return result.Stdout, nil
 }
 
-func (c *Client) CurrentCommand(session string) (string, error) {
-	result, err := c.run(defaultTimeout, "display-message", "-p", "-t", paneTarget(session), "#{pane_current_command}")
+func (c *Client) CurrentCommand(target string) (string, error) {
+	result, err := c.run(defaultTimeout, "display-message", "-p", "-t", normalizeTarget(target), "#{pane_current_command}")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(result.Stdout), nil
 }
 
-func (c *Client) SessionAlive(session string) (bool, error) {
-	return c.HasSession(session)
+func (c *Client) TargetAlive(target string) (bool, error) {
+	_, err := c.run(defaultTimeout, "display-message", "-p", "-t", normalizeTarget(target), "#{pane_id}")
+	if err != nil {
+		if strings.Contains(err.Error(), "can't find pane") || strings.Contains(err.Error(), "can't find window") {
+			return false, nil
+		}
+		if strings.Contains(err.Error(), "can't find session") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *Client) AttachCommand(session string) string {
@@ -92,6 +102,13 @@ func (c *Client) run(timeout time.Duration, args ...string) (execx.Result, error
 	return c.runner.Run(context.Background(), timeout, "tmux", args...)
 }
 
-func paneTarget(session string) string {
-	return session + ":0.0"
+func normalizeTarget(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if strings.Contains(target, ":") || strings.HasPrefix(target, "%") {
+		return target
+	}
+	return target + ":0.0"
 }

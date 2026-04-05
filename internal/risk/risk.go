@@ -8,6 +8,7 @@ import (
 )
 
 var shellCombinerRE = regexp.MustCompile(`(\|\||&&|;|\||>>|>|<<|<|\n|\r|\$\(|` + "`" + `)`)
+var jumpNavInputRE = regexp.MustCompile(`^[A-Za-z0-9_./:-]+$`)
 
 var readPrefixes = []string{
 	"pwd",
@@ -52,7 +53,11 @@ func Normalize(command string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(command)), " ")
 }
 
-func Classify(command string) (string, model.RiskLevel) {
+type Context struct {
+	Stage model.PaneStage
+}
+
+func Classify(command string, ctx Context) (string, model.RiskLevel) {
 	normalized := Normalize(command)
 	if normalized == "" {
 		return "", model.RiskRisky
@@ -61,6 +66,10 @@ func Classify(command string) (string, model.RiskLevel) {
 
 	if shellCombinerRE.MatchString(lower) {
 		return normalized, model.RiskRisky
+	}
+
+	if isJumpMenuStage(ctx.Stage) && jumpNavInputRE.MatchString(normalized) {
+		return normalized, model.RiskNav
 	}
 
 	for _, prefix := range riskyPrefixes {
@@ -82,4 +91,13 @@ func Classify(command string) (string, model.RiskLevel) {
 	}
 
 	return normalized, model.RiskRisky
+}
+
+func isJumpMenuStage(stage model.PaneStage) bool {
+	switch stage {
+	case model.StageJumpMenu, model.StageHostSearch, model.StageAccountSelect:
+		return true
+	default:
+		return false
+	}
 }

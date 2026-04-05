@@ -88,12 +88,15 @@ tmux-ghostty down --force
 tmux-ghostty status
 
 tmux-ghostty workspace create
+tmux-ghostty workspace inspect-current
+tmux-ghostty workspace adopt-current
 tmux-ghostty workspace reconcile
 tmux-ghostty workspace close <workspace-id>
 
 tmux-ghostty pane list
 tmux-ghostty pane focus <pane-id>
 tmux-ghostty pane snapshot <pane-id>
+tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]
 
 tmux-ghostty host attach <pane-id> <query>
 
@@ -113,6 +116,8 @@ tmux-ghostty help
 ```
 
 `tmux-ghostty help` is the authoritative detailed command reference. The README keeps the high-level command tree; use the CLI for the per-command descriptions. `tmux-ghostty -h` and `tmux-ghostty --help` are equivalent aliases.
+
+`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal can be adopted into a workspace. `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. `tmux-ghostty pane split` is the formal way to grow an existing workspace in-place.
 
 `tmux-ghostty version` prints build metadata. `tmux-ghostty self-update` installs a GitHub Release package over the current installation. `tmux-ghostty uninstall` removes both installed binaries and the current user's runtime data.
 
@@ -210,7 +215,7 @@ Current classification is prefix-based and intentionally conservative:
 
 - shell combiners and redirections such as `&&`, `||`, `;`, `|`, `>`, `>>`, `<`, `<<`, command substitution, or multi-line input are always `risky`
 - unknown commands also fall back to `risky`
-- JumpServer menu-style inputs such as `/1201` or `1` are currently not special-cased, so they are also treated as `risky`
+- when a pane is in a JumpServer menu stage, inputs such as `2801`, `/2801`, `1`, or `h` are treated as `nav` instead of `risky`
 
 ## Runtime Paths
 

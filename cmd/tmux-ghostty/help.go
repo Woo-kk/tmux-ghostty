@@ -34,6 +34,8 @@ var commandHelpGroups = []commandHelpGroup{
 		Name: "Workspace",
 		Commands: []commandHelp{
 			{Usage: "tmux-ghostty workspace create", Summary: "Create a workspace and its first pane."},
+			{Usage: "tmux-ghostty workspace inspect-current", Summary: "Inspect the currently focused Ghostty terminal and report whether it can be adopted into a workspace."},
+			{Usage: "tmux-ghostty workspace adopt-current", Summary: "Adopt the currently focused Ghostty terminal into a new workspace without opening a new window."},
 			{Usage: "tmux-ghostty workspace reconcile", Summary: "Rebuild workspace state from the current Ghostty/tmux view."},
 			{Usage: "tmux-ghostty workspace close <workspace-id>", Summary: "Close a workspace and all panes that belong to it."},
 		},
@@ -44,6 +46,7 @@ var commandHelpGroups = []commandHelpGroup{
 			{Usage: "tmux-ghostty pane list", Summary: "List panes as JSON."},
 			{Usage: "tmux-ghostty pane focus <pane-id>", Summary: "Focus the pane in Ghostty."},
 			{Usage: "tmux-ghostty pane snapshot <pane-id>", Summary: "Capture pane text and metadata from tmux."},
+			{Usage: "tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]", Summary: "Split an existing pane inside the same workspace and return the new pane as JSON."},
 		},
 	},
 	{
@@ -80,6 +83,7 @@ var commandHelpGroups = []commandHelpGroup{
 
 var helpNotes = []string{
 	"Most workspace, pane, host, control, and command subcommands auto-start the local broker.",
+	`Use "tmux-ghostty workspace inspect-current" before "workspace adopt-current" when you want to keep working in the current Ghostty window.`,
 	`Use "tmux-ghostty pane list" to discover pane IDs before focus, snapshot, host, or control operations.`,
 	"Most query-style commands print JSON.",
 	`Use "tmux-ghostty command preview" before "command send" when you are unsure whether a command is risky.`,

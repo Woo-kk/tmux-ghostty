@@ -324,6 +324,20 @@ func runWorkspace(ctx context.Context, paths app.Paths, args []string) int {
 		}
 		printJSON(result)
 		return 0
+	case "inspect-current":
+		var result any
+		if err := client.Call(ctx, "workspace.inspect_current", nil, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
+	case "adopt-current":
+		var result any
+		if err := client.Call(ctx, "workspace.adopt_current", nil, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
 	case "reconcile":
 		var result any
 		if err := client.Call(ctx, "workspace.reconcile", nil, &result); err != nil {
@@ -384,6 +398,32 @@ func runPane(ctx context.Context, paths app.Paths, args []string) int {
 			return printError(err)
 		}
 		printJSON(snapshot)
+		return 0
+	case "split":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]")
+			return 1
+		}
+		flags := flag.NewFlagSet("pane split", flag.ContinueOnError)
+		flags.SetOutput(os.Stderr)
+		direction := flags.String("direction", "", "split direction")
+		claim := flags.String("claim", "", "optional controller for the new pane")
+		if err := flags.Parse(args[2:]); err != nil {
+			return 1
+		}
+		if strings.TrimSpace(*direction) == "" {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]")
+			return 1
+		}
+		var pane model.Pane
+		if err := client.Call(ctx, "pane.split", map[string]any{
+			"pane_id":   args[1],
+			"direction": *direction,
+			"claim":     *claim,
+		}, &pane); err != nil {
+			return printError(err)
+		}
+		printJSON(pane)
 		return 0
 	default:
 		usage()

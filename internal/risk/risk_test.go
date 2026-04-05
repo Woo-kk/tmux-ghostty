@@ -9,6 +9,7 @@ import (
 func TestClassify(t *testing.T) {
 	testCases := []struct {
 		command string
+		stage   model.PaneStage
 		want    model.RiskLevel
 	}{
 		{command: "pwd", want: model.RiskRead},
@@ -16,11 +17,16 @@ func TestClassify(t *testing.T) {
 		{command: "cd /tmp", want: model.RiskNav},
 		{command: "kubectl apply -f k8s.yaml", want: model.RiskRisky},
 		{command: "echo hi > file.txt", want: model.RiskRisky},
+		{command: "2801", stage: model.StageJumpMenu, want: model.RiskNav},
+		{command: "/2801", stage: model.StageHostSearch, want: model.RiskNav},
+		{command: "1", stage: model.StageAccountSelect, want: model.RiskNav},
+		{command: "h", stage: model.StageJumpMenu, want: model.RiskNav},
+		{command: "1", stage: model.StageShell, want: model.RiskRisky},
 		{command: "unknowncmd", want: model.RiskRisky},
 	}
 
 	for _, testCase := range testCases {
-		_, got := Classify(testCase.command)
+		_, got := Classify(testCase.command, Context{Stage: testCase.stage})
 		if got != testCase.want {
 			t.Fatalf("classify(%q) = %q, want %q", testCase.command, got, testCase.want)
 		}

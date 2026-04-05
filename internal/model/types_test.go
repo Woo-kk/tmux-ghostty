@@ -13,4 +13,13 @@ func TestNewPaneDefaults(t *testing.T) {
 	if pane.RemoteTmuxSession != "tmux-ghostty" {
 		t.Fatalf("expected default remote tmux session")
 	}
+	if pane.LocalTmuxTarget != pane.LocalTmuxSession+":0.0" {
+		t.Fatalf("expected default local tmux target to point at session root pane")
+	}
+	if !pane.OwnsLocalTmux {
+		t.Fatalf("expected new pane to own its local tmux session")
+	}
+	if pane.Stage != StageUnknown {
+		t.Fatalf("expected default stage unknown, got %q", pane.Stage)
+	}
 }

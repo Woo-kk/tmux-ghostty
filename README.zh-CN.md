@@ -88,12 +88,15 @@ tmux-ghostty down --force
 tmux-ghostty status
 
 tmux-ghostty workspace create
+tmux-ghostty workspace inspect-current
+tmux-ghostty workspace adopt-current
 tmux-ghostty workspace reconcile
 tmux-ghostty workspace close <workspace-id>
 
 tmux-ghostty pane list
 tmux-ghostty pane focus <pane-id>
 tmux-ghostty pane snapshot <pane-id>
+tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]
 
 tmux-ghostty host attach <pane-id> <query>
 
@@ -113,6 +116,8 @@ tmux-ghostty help
 ```
 
 `tmux-ghostty help` 是权威的详细命令参考。README 只保留高层级命令树，具体命令说明请以 CLI 输出为准。`tmux-ghostty -h` 和 `tmux-ghostty --help` 是等价别名。
+
+`tmux-ghostty workspace inspect-current` 会报告当前焦点 Ghostty terminal 是否可被接管。`tmux-ghostty workspace adopt-current` 会在当前 Ghostty 窗口内继续工作，而不是新开窗口。`tmux-ghostty pane split` 是在已有 workspace 内正式扩 pane 的入口。
 
 `tmux-ghostty version` 会输出构建元信息。`tmux-ghostty self-update` 会用 GitHub Release 中的安装包覆盖当前安装。`tmux-ghostty uninstall` 会同时删除两个已安装二进制和当前用户的运行时数据。
 
@@ -210,7 +215,7 @@ sudo install -m 0755 ./tmux-ghostty-broker /usr/local/bin/tmux-ghostty-broker
 
 - 包含 `&&`、`||`、`;`、`|`、`>`、`>>`、`<`、`<<`、命令替换或多行输入的命令，都会直接归类为 `risky`
 - 未识别的命令默认也归类为 `risky`
-- JumpServer 菜单式输入，例如 `/1201` 或 `1`，当前没有做特殊放行，因此也会被归类为 `risky`
+- 当 pane 处于 JumpServer 菜单阶段时，`2801`、`/2801`、`1`、`h` 这类输入会按 `nav` 处理，不再默认走 `risky`
 
 ## 运行时路径
 

@@ -37,6 +37,9 @@ func toRPCError(err error) *rpc.RPCError {
 	if err == nil {
 		return nil
 	}
+	type rpcDataProvider interface {
+		RPCData() any
+	}
 	var brokerErr *BrokerError
 	if errors.As(err, &brokerErr) {
 		code := rpc.CodeInvalidState
@@ -58,7 +61,15 @@ func toRPCError(err error) *rpc.RPCError {
 		case rpc.ReasonJumpAttachFailed:
 			code = rpc.CodeJumpAttachFailed
 		}
-		return rpc.NewError(code, brokerErr.Reason, brokerErr.Err.Error())
+		detail := any(nil)
+		if brokerErr.Err != nil {
+			if provider, ok := brokerErr.Err.(rpcDataProvider); ok {
+				detail = provider.RPCData()
+			} else {
+				detail = brokerErr.Err.Error()
+			}
+		}
+		return rpc.NewError(code, brokerErr.Reason, detail)
 	}
 	return rpc.NewError(rpc.CodeInvalidState, rpc.ReasonInvalidState, err.Error())
 }

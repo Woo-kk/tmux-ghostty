@@ -36,6 +36,19 @@ const (
 	ModeDisconnected     PaneMode = "disconnected"
 )
 
+type PaneStage string
+
+const (
+	StageUnknown        PaneStage = "unknown"
+	StageShell          PaneStage = "shell"
+	StageJumpMenu       PaneStage = "jump_menu"
+	StageHostSearch     PaneStage = "host_search"
+	StageAccountSelect  PaneStage = "account_select"
+	StageRemoteShell    PaneStage = "remote_shell"
+	StageConnecting     PaneStage = "connecting"
+	StagePasswordPrompt PaneStage = "password_prompt"
+)
+
 type RiskLevel string
 
 const (
@@ -79,9 +92,12 @@ type Pane struct {
 	HostResolvedName  string     `json:"host_resolved_name"`
 	GhosttyTerminalID string     `json:"ghostty_terminal_id"`
 	LocalTmuxSession  string     `json:"local_tmux_session"`
+	LocalTmuxTarget   string     `json:"local_tmux_target"`
+	OwnsLocalTmux     bool       `json:"owns_local_tmux"`
 	RemoteTmuxSession string     `json:"remote_tmux_session"`
 	Controller        Controller `json:"controller"`
 	Mode              PaneMode   `json:"mode"`
+	Stage             PaneStage  `json:"stage"`
 	LastSnapshotHash  string     `json:"last_snapshot_hash"`
 	LastSnapshot      string     `json:"last_snapshot"`
 	LastPrompt        string     `json:"last_prompt"`
@@ -116,10 +132,12 @@ type PaneSnapshot struct {
 	Text          string     `json:"text"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 	Mode          PaneMode   `json:"mode"`
+	Stage         PaneStage  `json:"stage"`
 	Controller    Controller `json:"controller"`
 	Prompt        string     `json:"prompt"`
 	SnapshotHash  string     `json:"snapshot_hash"`
 	LocalSession  string     `json:"local_session"`
+	LocalTarget   string     `json:"local_target"`
 	RemoteSession string     `json:"remote_session"`
 }
 
@@ -157,13 +175,17 @@ func NewWorkspace() Workspace {
 func NewPane(workspaceID string) Pane {
 	id := "pane-" + randomID()
 	now := time.Now().UTC()
+	localSession := "tg-" + id
 	return Pane{
 		ID:                id,
 		WorkspaceID:       workspaceID,
-		LocalTmuxSession:  "tg-" + id,
+		LocalTmuxSession:  localSession,
+		LocalTmuxTarget:   localSession + ":0.0",
+		OwnsLocalTmux:     true,
 		RemoteTmuxSession: "tmux-ghostty",
 		Controller:        ControllerUser,
 		Mode:              ModeIdle,
+		Stage:             StageUnknown,
 		LastActivityAt:    now,
 		LastSnapshotAt:    now,
 	}
