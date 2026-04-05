@@ -39,14 +39,14 @@ const (
 type PaneStage string
 
 const (
-	StageUnknown        PaneStage = "unknown"
-	StageShell          PaneStage = "shell"
-	StageJumpMenu       PaneStage = "jump_menu"
-	StageHostSearch     PaneStage = "host_search"
-	StageAccountSelect  PaneStage = "account_select"
-	StageRemoteShell    PaneStage = "remote_shell"
-	StageConnecting     PaneStage = "connecting"
-	StagePasswordPrompt PaneStage = "password_prompt"
+	StageUnknown      PaneStage = "unknown"
+	StageShell        PaneStage = "shell"
+	StageMenu         PaneStage = "menu"
+	StageTargetSearch PaneStage = "target_search"
+	StageSelection    PaneStage = "selection"
+	StageRemoteShell  PaneStage = "remote_shell"
+	StageConnecting   PaneStage = "connecting"
+	StageAuthPrompt   PaneStage = "auth_prompt"
 )
 
 type RiskLevel string
@@ -88,6 +88,7 @@ type Workspace struct {
 type Pane struct {
 	ID                string     `json:"id"`
 	WorkspaceID       string     `json:"workspace_id"`
+	RemoteProvider    string     `json:"remote_provider"`
 	HostQuery         string     `json:"host_query"`
 	HostResolvedName  string     `json:"host_resolved_name"`
 	GhosttyTerminalID string     `json:"ghostty_terminal_id"`
@@ -128,17 +129,18 @@ type State struct {
 }
 
 type PaneSnapshot struct {
-	PaneID        string     `json:"pane_id"`
-	Text          string     `json:"text"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	Mode          PaneMode   `json:"mode"`
-	Stage         PaneStage  `json:"stage"`
-	Controller    Controller `json:"controller"`
-	Prompt        string     `json:"prompt"`
-	SnapshotHash  string     `json:"snapshot_hash"`
-	LocalSession  string     `json:"local_session"`
-	LocalTarget   string     `json:"local_target"`
-	RemoteSession string     `json:"remote_session"`
+	PaneID         string     `json:"pane_id"`
+	Text           string     `json:"text"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	Mode           PaneMode   `json:"mode"`
+	Stage          PaneStage  `json:"stage"`
+	Controller     Controller `json:"controller"`
+	Prompt         string     `json:"prompt"`
+	SnapshotHash   string     `json:"snapshot_hash"`
+	LocalSession   string     `json:"local_session"`
+	LocalTarget    string     `json:"local_target"`
+	RemoteProvider string     `json:"remote_provider"`
+	RemoteSession  string     `json:"remote_session"`
 }
 
 type BrokerStatus struct {

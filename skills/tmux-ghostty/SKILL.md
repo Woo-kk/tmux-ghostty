@@ -1,6 +1,6 @@
 ---
 name: tmux-ghostty
-description: Use tmux-ghostty to manage local Ghostty/tmux workspaces, panes, current-window adoption, control handoff, approvals, and JumpServer-backed host attachment through the local CLI and broker.
+description: Use tmux-ghostty to manage local Ghostty/tmux workspaces, panes, current-window adoption, control handoff, approvals, and provider-based remote attachment through the local CLI and broker.
 ---
 
 # Tmux Ghostty
@@ -17,10 +17,10 @@ Do not dump internal package names, JSON-RPC method names, or repository impleme
 
 The help response should cover these points:
 
-- 这个 skill 用来通过 `tmux-ghostty` 管理本地 Ghostty + tmux 工作区、pane 控制权、命令发送和审批，以及通过 JumpServer 挂接远端主机。
+- 这个 skill 用来通过 `tmux-ghostty` 管理本地 Ghostty + tmux 工作区、pane 控制权、命令发送和审批，以及通过远端 provider 挂接远端主机。
 - Ghostty 只是可见终端界面，真正共享的文本状态在 tmux 里，所以用户和 agent 可以围绕同一 pane 协作。
 - 多数操作会自动拉起本地 broker，不需要用户先做复杂初始化。
-- 如果用户要求“就在这个窗口里继续”，优先走 `workspace inspect-current` 和 `workspace adopt-current`，而不是默认新开窗口。
+- 如果用户要求“就在这个窗口里继续”，优先走 `workspace inspect-current` 和 `workspace adopt-current`，而不是默认新开窗口；这条路径失败时要明确报错，不能假装等价成功。
 - 如果不知道 pane 或 action ID，先执行 `tmux-ghostty pane list` 或 `tmux-ghostty actions`。
 
 The help response should also give a few short example requests such as:
@@ -60,7 +60,7 @@ Keep that response concise and task-oriented.
 - `workspace adopt-current`: formal path for taking over the current Ghostty window without opening a new one.
 - `workspace reconcile`: restore already known workspaces. It does not import an unmanaged current window.
 - `pane split`: formal path for adding panes inside an existing workspace.
-- `host attach`: formal JumpServer attach entrypoint.
+- `host attach`: formal remote-provider attach entrypoint. The current built-in provider is JumpServer.
 - If the CLI still lacks a required capability, say so explicitly. Do not silently fall back to ad hoc `tmux` or `osascript` layout surgery.
 
 ## Workflow
@@ -81,7 +81,8 @@ Keep that response concise and task-oriented.
   - `tmux-ghostty pane split <pane-id> --direction ...`
 - After `inspect-current`, tell the user whether the focused terminal is adoptable.
 - After `adopt-current`, explicitly state that this run is using the current Ghostty window.
-- If `adopt-current` fails, explain the reason and only then downgrade to `workspace create`.
+- If `adopt-current` fails, explain the reason and stop the current-window flow.
+- Only switch to `workspace create` if the user explicitly accepts opening a new Ghostty window.
 
 ### 3. Workspace lifecycle
 
@@ -98,11 +99,11 @@ Keep that response concise and task-oriented.
 - Use `--claim agent` or `--claim user` on `pane split` when ownership should be set immediately.
 - When reporting results, describe the pane topology and which host each pane is attached to.
 
-### 5. Remote host attach
+### 5. Remote attach
 
-- Use `tmux-ghostty host attach <pane-id> <query>` to attach a pane to a JumpServer-backed host session.
+- Use `tmux-ghostty host attach <pane-id> <query>` to attach a pane through the configured remote provider.
 - Treat this as pane-level routing inside the shared terminal model, not as a separate remote shell protocol.
-- If the user only needs remote shell automation and not the local shared Ghostty/tmux UI model, the standalone `tmux-jumpserver` skill may be a better fit.
+- If the current provider is JumpServer and the user only needs remote shell automation rather than the shared Ghostty/tmux UI model, the standalone `tmux-jumpserver` skill may be a better fit.
 
 ### 6. Control handoff
 
@@ -118,18 +119,18 @@ Keep that response concise and task-oriented.
 - Use `tmux-ghostty command send <pane-id> <command...>` to execute the command.
 - If the broker marks the command as risky, inspect `tmux-ghostty actions`.
 - Approve with `tmux-ghostty approve <action-id>` or reject with `tmux-ghostty deny <action-id>`.
-- Use the `stage` field in `pane snapshot` or `status` output to decide whether the pane is in `shell`, `jump_menu`, `host_search`, `account_select`, or `remote_shell`.
+- Use the `stage` field in `pane snapshot` or `status` output to decide whether the pane is in `shell`, `menu`, `target_search`, `selection`, `auth_prompt`, or `remote_shell`.
 - If a pending approval already exists, stop and resolve it before sending more commands into the same pane.
 
-### 8. JumpServer menu runbook
+### 8. Provider menu runbook
 
-- Treat `Opt>` as `jump_menu`.
-- Treat `[Host]>` or `Search:` as `host_search`.
-- Treat `ID>` or parsed account rows as `account_select`.
+- For the built-in JumpServer provider, treat `Opt>` as `menu`.
+- Treat `[Host]>` or `Search:` as `target_search`.
+- Treat `ID>` or parsed account rows as `selection`.
 - Treat a normal prompt after attach as `remote_shell`.
-- In JumpServer menu stages, single-token navigation inputs such as `2801`, `/2801`, `1`, or `h` should usually classify as `nav`. If they still come back as `risky`, treat that as a product gap, not as a normal success path.
-- If `host attach` fails and the pane is still in a JumpServer menu stage, inspect `pane snapshot` and the current `stage` before deciding the next input.
-- Use `actions` only when the CLI still requests approval. Do not normalize that as the preferred path for JumpServer menus.
+- In provider navigation stages, single-token inputs such as `2801`, `/2801`, `1`, or `h` should usually classify as `nav`. If they still come back as `risky`, treat that as a product gap, not as a normal success path.
+- If `host attach` fails and the pane is still in `menu`, `target_search`, or `selection`, inspect `pane snapshot`, read the current `stage`, and continue the menu flow with `command send` instead of abandoning the attach.
+- Use `actions` only when the CLI still requests approval. Do not normalize that as the preferred path for provider navigation menus.
 
 ### 9. Version, updates, and removal
 
@@ -146,10 +147,11 @@ Keep that response concise and task-oriented.
 - Most operational subcommands auto-start the broker. Use `up` when you want explicit broker visibility or troubleshooting.
 - Prefer the control-safe sequence `claim` -> `command preview` -> `command send` -> `actions` -> `approve` or `deny`.
 - For current-window requests, prefer `inspect-current` -> `adopt-current` -> `pane split` before considering `workspace create`.
+- When the user explicitly requires the current window, do not present `workspace create` as an equivalent success path.
 - Do not bypass the approval flow for risky commands.
 - Use `pane snapshot` before and after important transitions when you need verifiable terminal state.
 - Always tell the user whether the result is using the current window or a newly created workspace.
-- If the flow downgraded, state the downgrade reason explicitly.
+- If the user later agrees to open a new workspace, state clearly that this is a strategy change rather than a silent downgrade.
 - If the CLI still lacks a needed capability, say it is a product limitation instead of pretending the fallback is equivalent.
 - When a request is purely about CLI syntax or command discovery, answer from `tmux-ghostty help` behavior rather than internal package structure.
 - If the agent runtime does not auto-load `skills/`, open this file manually or point the runtime's repo instructions to it.
@@ -158,9 +160,9 @@ Keep that response concise and task-oriented.
 
 - `workspace adopt-current` fails:
   Explain the reason.
-  Then downgrade to `workspace create`.
-- `host attach` fails while `stage` is `jump_menu` or `host_search`:
-  Read `pane snapshot`, inspect `stage`, and continue with the menu flow instead of improvising unrelated shell commands.
+  Stop the current-window flow unless the user explicitly asks to switch to `workspace create`.
+- `host attach` fails while `stage` is `menu`, `target_search`, or `selection`:
+  Read `pane snapshot`, inspect `stage`, and continue with the menu flow instead of improvising unrelated shell commands or giving up.
 - Query or account selection is ambiguous:
   Report the concrete candidates instead of claiming attach succeeded.
 - A pending approval already exists:

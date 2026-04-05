@@ -9,8 +9,8 @@ import (
 	"github.com/Woo-kk/tmux-ghostty/internal/broker"
 	"github.com/Woo-kk/tmux-ghostty/internal/execx"
 	"github.com/Woo-kk/tmux-ghostty/internal/ghostty"
-	"github.com/Woo-kk/tmux-ghostty/internal/jump"
 	"github.com/Woo-kk/tmux-ghostty/internal/logx"
+	"github.com/Woo-kk/tmux-ghostty/internal/remote"
 	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
 	"github.com/Woo-kk/tmux-ghostty/internal/tmux"
 )
@@ -33,9 +33,9 @@ func RunBrokerProcess() error {
 	runner := execx.NewRunner(logger)
 	tmuxClient := tmux.New(runner)
 	ghosttyClient := ghostty.New(runner)
-	jumpClient := jump.New(tmuxClient)
+	remoteClient := remote.New(tmuxClient)
 
-	service, err := broker.NewService(paths.StatePath, paths.ActionsPath, IdleTimeout(), logger, ghosttyClient, tmuxClient, jumpClient)
+	service, err := broker.NewService(paths.StatePath, paths.ActionsPath, IdleTimeout(), logger, ghosttyClient, tmuxClient, remoteClient)
 	if err != nil {
 		return err
 	}

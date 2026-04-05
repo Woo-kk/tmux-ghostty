@@ -14,7 +14,7 @@
 - 从本地 `tmux` 抓取 pane 快照
 - 显式控制权切换：`claim` / `release` / `interrupt` / `observe`
 - 命令风险分类和审批流
-- 复用本地 `tmux-jumpserver` runner 的 JumpServer attach 适配层
+- 基于 provider 的远端挂接层，当前内置 JumpServer provider，并复用本地 `tmux-jumpserver` runner
 - broker 空闲自动退出逻辑
 
 ## 仓库结构
@@ -29,7 +29,7 @@ internal/
   control/
   execx/
   ghostty/
-  jump/
+  remote/
   logx/
   model/
   observe/
@@ -117,7 +117,7 @@ tmux-ghostty help
 
 `tmux-ghostty help` 是权威的详细命令参考。README 只保留高层级命令树，具体命令说明请以 CLI 输出为准。`tmux-ghostty -h` 和 `tmux-ghostty --help` 是等价别名。
 
-`tmux-ghostty workspace inspect-current` 会报告当前焦点 Ghostty terminal 是否可被接管。`tmux-ghostty workspace adopt-current` 会在当前 Ghostty 窗口内继续工作，而不是新开窗口。`tmux-ghostty pane split` 是在已有 workspace 内正式扩 pane 的入口。
+`tmux-ghostty workspace inspect-current` 会报告当前焦点 Ghostty terminal 是否可被接管。`tmux-ghostty workspace adopt-current` 会在当前 Ghostty 窗口内继续工作，而不是新开窗口。当前窗口模式下，CLI 不会再隐式拉起替代用的 Ghostty window；如果前台窗口、焦点 terminal 或 tmux 上下文不满足要求，它会明确失败。`tmux-ghostty pane split` 是在已有 workspace 内正式扩 pane 的入口。
 
 `tmux-ghostty version` 会输出构建元信息。`tmux-ghostty self-update` 会用 GitHub Release 中的安装包覆盖当前安装。`tmux-ghostty uninstall` 会同时删除两个已安装二进制和当前用户的运行时数据。
 
@@ -215,7 +215,7 @@ sudo install -m 0755 ./tmux-ghostty-broker /usr/local/bin/tmux-ghostty-broker
 
 - 包含 `&&`、`||`、`;`、`|`、`>`、`>>`、`<`、`<<`、命令替换或多行输入的命令，都会直接归类为 `risky`
 - 未识别的命令默认也归类为 `risky`
-- 当 pane 处于 JumpServer 菜单阶段时，`2801`、`/2801`、`1`、`h` 这类输入会按 `nav` 处理，不再默认走 `risky`
+- 当 pane 处于远端 provider 的导航阶段，例如 `menu`、`target_search`、`selection` 时，`2801`、`/2801`、`1`、`h` 这类输入会按 `nav` 处理，不再默认走 `risky`
 
 ## 运行时路径
 
@@ -241,9 +241,11 @@ broker.log
 - `TMUX_GHOSTTY_BROKER_BIN`
 - `TMUX_GHOSTTY_RELEASE_REPO`
 - `TMUX_GHOSTTY_IDLE_TIMEOUT`
-- `TMUX_GHOSTTY_JUMP_PROFILE`
-- `TMUX_GHOSTTY_JUMP_RUNNER`
+- `TMUX_GHOSTTY_REMOTE_PROVIDER`
 - `TMUX_GHOSTTY_REMOTE_TMUX_SESSION`
+
+JumpServer provider 专用变量：
+`TMUX_GHOSTTY_JUMP_PROFILE`、`TMUX_GHOSTTY_JUMP_RUNNER`
 
 ## GitHub Release 自动发布
 
@@ -261,5 +263,6 @@ git push origin v0.1.0
 ## 说明
 
 - Ghostty 只被当作可见前端使用。真正的文本/数据传递由 `tmux` 负责，所以快照文本来自本地 `tmux`，而不是 Ghostty 的内容 API。
-- JumpServer 适配层默认假设本机已有 `/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh`；如果需要，可通过 `TMUX_GHOSTTY_JUMP_RUNNER` 覆盖。
+- `host attach` 现在通过 `internal/remote` 挂接 provider，后续可以扩到 SSH 直连或其他跳板机类型，而不用重写 broker/workspace 核心。
+- 当前内置的 `jumpserver` provider 默认假设本机已有 `/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh`；如果需要，可通过 `TMUX_GHOSTTY_JUMP_RUNNER` 覆盖。
 - 当前测试套件使用真实本地 `tmux` 加 fake Ghostty 编排，因此自动化测试时不会真的弹出 GUI 窗口。

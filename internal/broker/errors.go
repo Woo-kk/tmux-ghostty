@@ -58,8 +58,8 @@ func toRPCError(err error) *rpc.RPCError {
 			code = rpc.CodeApprovalRequired
 		case rpc.ReasonInvalidState:
 			code = rpc.CodeInvalidState
-		case rpc.ReasonJumpAttachFailed:
-			code = rpc.CodeJumpAttachFailed
+		case rpc.ReasonRemoteAttachFailed:
+			code = rpc.CodeRemoteAttachFailed
 		}
 		detail := any(nil)
 		if brokerErr.Err != nil {

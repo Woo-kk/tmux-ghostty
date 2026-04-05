@@ -14,17 +14,17 @@ import (
 	"github.com/Woo-kk/tmux-ghostty/internal/control"
 	"github.com/Woo-kk/tmux-ghostty/internal/execx"
 	"github.com/Woo-kk/tmux-ghostty/internal/ghostty"
-	"github.com/Woo-kk/tmux-ghostty/internal/jump"
 	"github.com/Woo-kk/tmux-ghostty/internal/logx"
 	"github.com/Woo-kk/tmux-ghostty/internal/model"
 	"github.com/Woo-kk/tmux-ghostty/internal/observe"
+	"github.com/Woo-kk/tmux-ghostty/internal/remote"
 	"github.com/Woo-kk/tmux-ghostty/internal/risk"
 	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
 	"github.com/Woo-kk/tmux-ghostty/internal/store"
 )
 
 type GhosttyClient interface {
-	Available() error
+	RequireAvailable() error
 	EnsureRunning() error
 	InspectFocused() (ghostty.FocusContext, error)
 	NewWindow(initialCommand string) (ghostty.WindowRef, ghostty.TerminalRef, error)
@@ -50,11 +50,12 @@ type TmuxClient interface {
 	AttachCommand(session string) string
 }
 
-type JumpClient interface {
-	SearchHost(query string) ([]jump.HostMatch, error)
-	AttachHost(localTarget string, hostQuery string) (jump.ResolvedHost, error)
-	EnsureRemoteTmux(localTarget string, remoteSession string) error
+type RemoteClient interface {
+	SearchTarget(query string) ([]remote.TargetMatch, error)
+	AttachTarget(localTarget string, query string) (remote.ResolvedTarget, error)
+	EnsureRemoteSession(localTarget string, remoteSession string) error
 	Reconnect(localTarget string) error
+	DetectStage(text string) model.PaneStage
 }
 
 type Service struct {
@@ -63,7 +64,7 @@ type Service struct {
 	log          *logx.Logger
 	ghostty      GhosttyClient
 	tmux         TmuxClient
-	jump         JumpClient
+	remote       RemoteClient
 	state        model.State
 	actions      []model.Action
 	idleTimeout  time.Duration
@@ -87,8 +88,8 @@ type PreviewResult struct {
 }
 
 type AttachResult struct {
-	Pane model.Pane        `json:"pane"`
-	Host jump.ResolvedHost `json:"host"`
+	Pane   model.Pane            `json:"pane"`
+	Target remote.ResolvedTarget `json:"target"`
 }
 
 type CurrentFocusInspection struct {
@@ -155,7 +156,7 @@ type currentTerminalProbe struct {
 	TmuxPane    string `json:"tmux_pane,omitempty"`
 }
 
-func NewService(statePath string, actionsPath string, idleTimeout time.Duration, log *logx.Logger, ghosttyClient GhosttyClient, tmuxClient TmuxClient, jumpClient JumpClient) (*Service, error) {
+func NewService(statePath string, actionsPath string, idleTimeout time.Duration, log *logx.Logger, ghosttyClient GhosttyClient, tmuxClient TmuxClient, remoteClient RemoteClient) (*Service, error) {
 	stateStore := store.New(statePath, actionsPath)
 	state, err := stateStore.LoadState()
 	if err != nil {
@@ -173,7 +174,7 @@ func NewService(statePath string, actionsPath string, idleTimeout time.Duration,
 		log:          log,
 		ghostty:      ghosttyClient,
 		tmux:         tmuxClient,
-		jump:         jumpClient,
+		remote:       remoteClient,
 		state:        state,
 		actions:      actions,
 		idleTimeout:  idleTimeout,
@@ -573,10 +574,11 @@ func (s *Service) AttachHost(paneID string, query string) (AttachResult, error) 
 	if err != nil {
 		return AttachResult{}, err
 	}
-	resolved, err := s.jump.AttachHost(pane.LocalTmuxTarget, query)
+	resolved, err := s.remote.AttachTarget(pane.LocalTmuxTarget, query)
 	if err != nil {
-		return AttachResult{}, newError(rpc.ReasonJumpAttachFailed, err)
+		return AttachResult{}, newError(rpc.ReasonRemoteAttachFailed, err)
 	}
+	pane.RemoteProvider = resolved.Provider
 	pane.HostQuery = query
 	pane.HostResolvedName = coalesce(resolved.Name, query)
 	pane.RemoteTmuxSession = resolved.RemoteSession
@@ -589,7 +591,7 @@ func (s *Service) AttachHost(paneID string, query string) (AttachResult, error) 
 	if err := s.saveLocked(); err != nil {
 		return AttachResult{}, err
 	}
-	return AttachResult{Pane: pane, Host: resolved}, nil
+	return AttachResult{Pane: pane, Target: resolved}, nil
 }
 
 func (s *Service) Claim(paneID string, actor string) (model.Pane, error) {
@@ -976,7 +978,7 @@ func (s *Service) rebuildWorkspaceLocked(workspaceID string) (model.Workspace, e
 }
 
 func (s *Service) inspectCurrentLocked() (CurrentFocusInspection, error) {
-	if err := s.ghostty.EnsureRunning(); err != nil {
+	if err := s.ghostty.RequireAvailable(); err != nil {
 		return CurrentFocusInspection{}, newError(rpc.ReasonGhosttyUnavailable, err)
 	}
 
@@ -1007,6 +1009,15 @@ func (s *Service) inspectCurrentLocked() (CurrentFocusInspection, error) {
 	}
 
 	probe, err := s.probeCurrent(focus.Terminal.ID)
+	focusAfter, focusErr := s.ghostty.InspectFocused()
+	if focusErr != nil {
+		return CurrentFocusInspection{}, newError(rpc.ReasonGhosttyUnavailable, fmt.Errorf("could not re-check current Ghostty focus after probe: %w", focusErr))
+	}
+	if !sameFocusContext(focus, focusAfter) {
+		inspection.Adoptable = false
+		inspection.Reason = "focused terminal changed during probe"
+		return inspection, nil
+	}
 	if err != nil {
 		inspection.Adoptable = false
 		inspection.Reason = err.Error()
@@ -1034,6 +1045,12 @@ func (s *Service) inspectCurrentLocked() (CurrentFocusInspection, error) {
 
 	inspection.Adoptable = true
 	return inspection, nil
+}
+
+func sameFocusContext(left ghostty.FocusContext, right ghostty.FocusContext) bool {
+	return left.Window.ID == right.Window.ID &&
+		left.Tab.ID == right.Tab.ID &&
+		left.Terminal.ID == right.Terminal.ID
 }
 
 func (s *Service) findPaneByTerminalLocked(terminalID string) *model.Pane {
@@ -1229,9 +1246,9 @@ printf '\033[1A\033[2K\r' > /dev/tty 2>/dev/null || true
 }
 
 func inferPaneStage(pane model.Pane, text string, currentCommand string) model.PaneStage {
-	stage := jump.DetectStage(text)
+	stage := remote.DetectStage(text)
 	switch stage {
-	case model.StageJumpMenu, model.StageHostSearch, model.StageAccountSelect, model.StageConnecting, model.StagePasswordPrompt:
+	case model.StageMenu, model.StageTargetSearch, model.StageSelection, model.StageConnecting, model.StageAuthPrompt:
 		return stage
 	case model.StageRemoteShell:
 		if pane.HostResolvedName != "" || pane.HostQuery != "" {
@@ -1322,17 +1339,18 @@ func (s *Service) launchCommandForPane(pane model.Pane) string {
 
 func toSnapshot(pane model.Pane) model.PaneSnapshot {
 	return model.PaneSnapshot{
-		PaneID:        pane.ID,
-		Text:          pane.LastSnapshot,
-		UpdatedAt:     pane.LastSnapshotAt,
-		Mode:          pane.Mode,
-		Stage:         pane.Stage,
-		Controller:    pane.Controller,
-		Prompt:        pane.LastPrompt,
-		SnapshotHash:  pane.LastSnapshotHash,
-		LocalSession:  pane.LocalTmuxSession,
-		LocalTarget:   pane.LocalTmuxTarget,
-		RemoteSession: pane.RemoteTmuxSession,
+		PaneID:         pane.ID,
+		Text:           pane.LastSnapshot,
+		UpdatedAt:      pane.LastSnapshotAt,
+		Mode:           pane.Mode,
+		Stage:          pane.Stage,
+		Controller:     pane.Controller,
+		Prompt:         pane.LastPrompt,
+		SnapshotHash:   pane.LastSnapshotHash,
+		LocalSession:   pane.LocalTmuxSession,
+		LocalTarget:    pane.LocalTmuxTarget,
+		RemoteProvider: pane.RemoteProvider,
+		RemoteSession:  pane.RemoteTmuxSession,
 	}
 }
 

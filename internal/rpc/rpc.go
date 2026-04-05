@@ -19,7 +19,8 @@ const (
 	CodeNotController      = -32005
 	CodeApprovalRequired   = -32006
 	CodeInvalidState       = -32007
-	CodeJumpAttachFailed   = -32008
+	CodeRemoteAttachFailed = -32008
+	CodeJumpAttachFailed   = CodeRemoteAttachFailed
 )
 
 const (
@@ -30,7 +31,8 @@ const (
 	ReasonNotController      = "not_controller"
 	ReasonApprovalRequired   = "approval_required"
 	ReasonInvalidState       = "invalid_state"
-	ReasonJumpAttachFailed   = "jump_attach_failed"
+	ReasonRemoteAttachFailed = "remote_attach_failed"
+	ReasonJumpAttachFailed   = ReasonRemoteAttachFailed
 )
 
 type Request struct {

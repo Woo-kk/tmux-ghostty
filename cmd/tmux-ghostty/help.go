@@ -34,8 +34,8 @@ var commandHelpGroups = []commandHelpGroup{
 		Name: "Workspace",
 		Commands: []commandHelp{
 			{Usage: "tmux-ghostty workspace create", Summary: "Create a workspace and its first pane."},
-			{Usage: "tmux-ghostty workspace inspect-current", Summary: "Inspect the currently focused Ghostty terminal and report whether it can be adopted into a workspace."},
-			{Usage: "tmux-ghostty workspace adopt-current", Summary: "Adopt the currently focused Ghostty terminal into a new workspace without opening a new window."},
+			{Usage: "tmux-ghostty workspace inspect-current", Summary: "Inspect the currently focused Ghostty terminal without launching a new window and report whether it can be adopted into a workspace."},
+			{Usage: "tmux-ghostty workspace adopt-current", Summary: "Adopt the currently focused Ghostty terminal into a new workspace without opening a new window. Fail explicitly if the current focus is unsuitable."},
 			{Usage: "tmux-ghostty workspace reconcile", Summary: "Rebuild workspace state from the current Ghostty/tmux view."},
 			{Usage: "tmux-ghostty workspace close <workspace-id>", Summary: "Close a workspace and all panes that belong to it."},
 		},
@@ -52,7 +52,7 @@ var commandHelpGroups = []commandHelpGroup{
 	{
 		Name: "Host",
 		Commands: []commandHelp{
-			{Usage: "tmux-ghostty host attach <pane-id> <query>", Summary: "Search JumpServer and attach the pane to the selected remote host/session."},
+			{Usage: "tmux-ghostty host attach <pane-id> <query>", Summary: "Attach the pane to a remote target through the configured remote provider. The current built-in provider is JumpServer."},
 		},
 	},
 	{
@@ -84,6 +84,7 @@ var commandHelpGroups = []commandHelpGroup{
 var helpNotes = []string{
 	"Most workspace, pane, host, control, and command subcommands auto-start the local broker.",
 	`Use "tmux-ghostty workspace inspect-current" before "workspace adopt-current" when you want to keep working in the current Ghostty window.`,
+	`Current-window commands fail explicitly when the focused Ghostty terminal cannot be adopted. They do not auto-open a replacement window.`,
 	`Use "tmux-ghostty pane list" to discover pane IDs before focus, snapshot, host, or control operations.`,
 	"Most query-style commands print JSON.",
 	`Use "tmux-ghostty command preview" before "command send" when you are unsure whether a command is risky.`,

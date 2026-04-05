@@ -8,7 +8,7 @@ import (
 )
 
 var shellCombinerRE = regexp.MustCompile(`(\|\||&&|;|\||>>|>|<<|<|\n|\r|\$\(|` + "`" + `)`)
-var jumpNavInputRE = regexp.MustCompile(`^[A-Za-z0-9_./:-]+$`)
+var remoteNavInputRE = regexp.MustCompile(`^[A-Za-z0-9_./:-]+$`)
 
 var readPrefixes = []string{
 	"pwd",
@@ -68,7 +68,7 @@ func Classify(command string, ctx Context) (string, model.RiskLevel) {
 		return normalized, model.RiskRisky
 	}
 
-	if isJumpMenuStage(ctx.Stage) && jumpNavInputRE.MatchString(normalized) {
+	if isRemoteNavigationStage(ctx.Stage) && remoteNavInputRE.MatchString(normalized) {
 		return normalized, model.RiskNav
 	}
 
@@ -93,9 +93,9 @@ func Classify(command string, ctx Context) (string, model.RiskLevel) {
 	return normalized, model.RiskRisky
 }
 
-func isJumpMenuStage(stage model.PaneStage) bool {
+func isRemoteNavigationStage(stage model.PaneStage) bool {
 	switch stage {
-	case model.StageJumpMenu, model.StageHostSearch, model.StageAccountSelect:
+	case model.StageMenu, model.StageTargetSearch, model.StageSelection:
 		return true
 	default:
 		return false

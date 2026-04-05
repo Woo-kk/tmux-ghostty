@@ -13,9 +13,9 @@ import (
 
 	"github.com/Woo-kk/tmux-ghostty/internal/execx"
 	"github.com/Woo-kk/tmux-ghostty/internal/ghostty"
-	"github.com/Woo-kk/tmux-ghostty/internal/jump"
 	"github.com/Woo-kk/tmux-ghostty/internal/logx"
 	"github.com/Woo-kk/tmux-ghostty/internal/model"
+	"github.com/Woo-kk/tmux-ghostty/internal/remote"
 	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
 	"github.com/Woo-kk/tmux-ghostty/internal/tmux"
 )
@@ -26,10 +26,17 @@ type fakeGhosttyClient struct {
 	tabCounter      int
 	terminalCounter int
 	splitErr        error
+	requireErr      error
+	requireCalls    int
+	ensureErr       error
+	ensureCalls     int
+	newWindowCalls  int
 	inputTextHook   func(string, string) error
 	sendKeyHook     func(string, string, []string) error
+	inspectHook     func() (ghostty.FocusContext, error)
 	inputTexts      []fakeGhosttyInput
 	sendKeyCalls    []fakeGhosttyKey
+	inspectResults  []fakeGhosttyFocusResult
 	windows         map[string]ghostty.WindowRef
 	tabs            map[string][]ghostty.TabRef
 	terminals       map[string][]ghostty.TerminalRef
@@ -47,7 +54,12 @@ type fakeGhosttyKey struct {
 	modifiers  []string
 }
 
-type fakeJumpClient struct{}
+type fakeGhosttyFocusResult struct {
+	focus ghostty.FocusContext
+	err   error
+}
+
+type fakeRemoteClient struct{}
 
 func newFakeGhosttyClient() *fakeGhosttyClient {
 	return &fakeGhosttyClient{
@@ -57,8 +69,24 @@ func newFakeGhosttyClient() *fakeGhosttyClient {
 	}
 }
 
-func (f *fakeGhosttyClient) Available() error     { return nil }
-func (f *fakeGhosttyClient) EnsureRunning() error { return nil }
+func (f *fakeGhosttyClient) RequireAvailable() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requireCalls++
+	return f.requireErr
+}
+
+func (f *fakeGhosttyClient) Available() error {
+	return f.RequireAvailable()
+}
+
+func (f *fakeGhosttyClient) EnsureRunning() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureCalls++
+	return f.ensureErr
+}
+
 func (f *fakeGhosttyClient) FocusTerminal(string) error {
 	return nil
 }
@@ -88,16 +116,30 @@ func (f *fakeGhosttyClient) SendKey(terminalID string, key string, modifiers []s
 }
 func (f *fakeGhosttyClient) InspectFocused() (ghostty.FocusContext, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.focus.Terminal.ID == "" {
+	if len(f.inspectResults) > 0 {
+		result := f.inspectResults[0]
+		if len(f.inspectResults) > 1 {
+			f.inspectResults = f.inspectResults[1:]
+		}
+		f.mu.Unlock()
+		return result.focus, result.err
+	}
+	hook := f.inspectHook
+	focus := f.focus
+	f.mu.Unlock()
+	if hook != nil {
+		return hook()
+	}
+	if focus.Terminal.ID == "" {
 		return ghostty.FocusContext{}, errors.New("no focused terminal")
 	}
-	return f.focus, nil
+	return focus, nil
 }
 
 func (f *fakeGhosttyClient) NewWindow(string) (ghostty.WindowRef, ghostty.TerminalRef, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.newWindowCalls++
 	f.windowCounter++
 	f.tabCounter++
 	f.terminalCounter++
@@ -184,16 +226,28 @@ func (f *fakeGhosttyClient) ListTerminals(tabID string) ([]ghostty.TerminalRef, 
 	return append([]ghostty.TerminalRef(nil), f.terminals[tabID]...), nil
 }
 
-func (f fakeJumpClient) SearchHost(query string) ([]jump.HostMatch, error) {
-	return []jump.HostMatch{{DisplayName: query}}, nil
+func (f fakeRemoteClient) SearchTarget(query string) ([]remote.TargetMatch, error) {
+	return []remote.TargetMatch{{DisplayName: query}}, nil
 }
 
-func (f fakeJumpClient) AttachHost(localTarget string, hostQuery string) (jump.ResolvedHost, error) {
-	return jump.ResolvedHost{Query: hostQuery, Name: hostQuery, RemoteSession: "tmux-ghostty"}, nil
+func (f fakeRemoteClient) AttachTarget(localTarget string, query string) (remote.ResolvedTarget, error) {
+	return remote.ResolvedTarget{
+		Query:         query,
+		Name:          query,
+		RemoteSession: "tmux-ghostty",
+		Provider:      remote.ProviderJumpServer,
+	}, nil
 }
 
-func (f fakeJumpClient) EnsureRemoteTmux(localTarget string, remoteSession string) error { return nil }
-func (f fakeJumpClient) Reconnect(localTarget string) error                              { return nil }
+func (f fakeRemoteClient) EnsureRemoteSession(localTarget string, remoteSession string) error {
+	return nil
+}
+
+func (f fakeRemoteClient) Reconnect(localTarget string) error { return nil }
+
+func (f fakeRemoteClient) DetectStage(text string) model.PaneStage {
+	return remote.DetectStage(text)
+}
 
 func TestShouldAutoExitLocked(t *testing.T) {
 	service := newTestService(t)
@@ -337,6 +391,96 @@ func TestInspectAndAdoptCurrent(t *testing.T) {
 	}
 }
 
+func TestInspectCurrentUsesRequireAvailableWithoutLaunch(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	_, terminal, err := fakeGhostty.NewWindow("")
+	if err != nil {
+		t.Fatalf("seed focused window: %v", err)
+	}
+	fakeGhostty.newWindowCalls = 0
+
+	sessionName := fmt.Sprintf("inspect-%d", time.Now().UnixNano())
+	if err := service.tmux.NewSession(sessionName); err != nil {
+		t.Fatalf("create inspect tmux session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.tmux.KillSession(sessionName)
+	})
+	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
+		if terminalID != terminal.ID {
+			t.Fatalf("unexpected terminal id: %s", terminalID)
+		}
+		return currentTerminalProbe{
+			InsideTmux:  true,
+			TmuxSession: sessionName,
+			TmuxPane:    sessionName + ":0.0",
+		}, nil
+	}
+
+	inspection, err := service.InspectCurrent()
+	if err != nil {
+		t.Fatalf("inspect current: %v", err)
+	}
+	if !inspection.Adoptable {
+		t.Fatalf("expected current focus to be adoptable, got %+v", inspection)
+	}
+	if fakeGhostty.requireCalls != 1 {
+		t.Fatalf("expected RequireAvailable to be used once, got %d", fakeGhostty.requireCalls)
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected current-window inspect not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected inspect current not to create a new window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestAdoptCurrentUsesRequireAvailableWithoutLaunch(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	window, terminal, err := fakeGhostty.NewWindow("")
+	if err != nil {
+		t.Fatalf("seed focused window: %v", err)
+	}
+	fakeGhostty.newWindowCalls = 0
+
+	sessionName := fmt.Sprintf("adopt-no-launch-%d", time.Now().UnixNano())
+	if err := service.tmux.NewSession(sessionName); err != nil {
+		t.Fatalf("create adopt tmux session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.tmux.KillSession(sessionName)
+	})
+	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
+		if terminalID != terminal.ID {
+			t.Fatalf("unexpected terminal id: %s", terminalID)
+		}
+		return currentTerminalProbe{
+			InsideTmux:  true,
+			TmuxSession: sessionName,
+			TmuxPane:    sessionName + ":0.0",
+		}, nil
+	}
+
+	result, err := service.AdoptCurrent()
+	if err != nil {
+		t.Fatalf("adopt current: %v", err)
+	}
+	if result.Workspace.GhosttyWindowID != window.ID {
+		t.Fatalf("expected adopted workspace to stay in focused window")
+	}
+	if fakeGhostty.requireCalls != 1 {
+		t.Fatalf("expected RequireAvailable to be used once, got %d", fakeGhostty.requireCalls)
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected adopt current not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected adopt current not to create a new window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
 func TestAdoptCurrentFailsWhenNotInsideTmux(t *testing.T) {
 	service := newTestService(t)
 	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
@@ -378,6 +522,58 @@ func TestAdoptCurrentFailsWhenCurrentTerminalAlreadyManaged(t *testing.T) {
 	}
 	if _, err := service.AdoptCurrent(); err == nil {
 		t.Fatalf("expected adopt current to fail for a managed terminal")
+	}
+}
+
+func TestCurrentWindowFailsWhenFocusChangesDuringProbe(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	firstFocus := ghostty.FocusContext{
+		Window:   ghostty.WindowRef{ID: "window-a", Name: "window-a", SelectedTabID: "tab-a"},
+		Tab:      ghostty.TabRef{ID: "tab-a", Name: "tab-a", Index: 1, Selected: true, FocusedTerminalID: "term-a"},
+		Terminal: ghostty.TerminalRef{ID: "term-a", Name: "term-a", WorkingDirectory: "/tmp/a"},
+	}
+	secondFocus := ghostty.FocusContext{
+		Window:   ghostty.WindowRef{ID: "window-b", Name: "window-b", SelectedTabID: "tab-b"},
+		Tab:      ghostty.TabRef{ID: "tab-b", Name: "tab-b", Index: 1, Selected: true, FocusedTerminalID: "term-b"},
+		Terminal: ghostty.TerminalRef{ID: "term-b", Name: "term-b", WorkingDirectory: "/tmp/b"},
+	}
+	fakeGhostty.focus = firstFocus
+	fakeGhostty.inspectResults = []fakeGhosttyFocusResult{
+		{focus: firstFocus},
+		{focus: secondFocus},
+		{focus: firstFocus},
+		{focus: secondFocus},
+	}
+	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
+		if terminalID != firstFocus.Terminal.ID {
+			t.Fatalf("unexpected terminal id: %s", terminalID)
+		}
+		return currentTerminalProbe{
+			InsideTmux:  true,
+			TmuxSession: "focus-shift",
+			TmuxPane:    "focus-shift:0.0",
+		}, nil
+	}
+
+	inspection, err := service.InspectCurrent()
+	if err != nil {
+		t.Fatalf("inspect current: %v", err)
+	}
+	if inspection.Adoptable {
+		t.Fatalf("expected inspect current to reject focus drift")
+	}
+	if inspection.Reason != "focused terminal changed during probe" {
+		t.Fatalf("unexpected inspect current reason: %q", inspection.Reason)
+	}
+	if _, err := service.AdoptCurrent(); err == nil {
+		t.Fatalf("expected adopt current to fail when focus changes during probe")
+	}
+	if len(service.state.Workspaces) != 0 {
+		t.Fatalf("expected no workspace to be created after probe focus drift")
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected no new Ghostty window to be created, got %d", fakeGhostty.newWindowCalls)
 	}
 }
 
@@ -568,7 +764,7 @@ func newTestService(t *testing.T) *Service {
 		logger,
 		newFakeGhosttyClient(),
 		tmuxClient,
-		fakeJumpClient{},
+		fakeRemoteClient{},
 	)
 	if err != nil {
 		t.Fatalf("create service: %v", err)

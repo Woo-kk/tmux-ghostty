@@ -52,13 +52,17 @@ func New(runner *execx.Runner) *Client {
 	return &Client{runner: runner}
 }
 
-func (c *Client) Available() error {
+func (c *Client) RequireAvailable() error {
 	_, err := c.runScript(`tell application id "` + appBundleID + `" to return version`)
 	return err
 }
 
+func (c *Client) Available() error {
+	return c.RequireAvailable()
+}
+
 func (c *Client) EnsureRunning() error {
-	if err := c.Available(); err == nil {
+	if err := c.RequireAvailable(); err == nil {
 		return nil
 	}
 	if _, err := c.runner.Run(context.Background(), scriptTimeout, "open", "-a", appName); err != nil {
@@ -67,7 +71,7 @@ func (c *Client) EnsureRunning() error {
 	deadline := time.Now().Add(10 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		if err := c.Available(); err == nil {
+		if err := c.RequireAvailable(); err == nil {
 			return nil
 		} else {
 			lastErr = err

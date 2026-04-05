@@ -14,7 +14,7 @@
 - pane snapshot capture from local `tmux`
 - explicit `claim` / `release` / `interrupt` / `observe`
 - command risk classification with approval flow
-- JumpServer attach adapter that reuses the local `tmux-jumpserver` runner
+- provider-based remote attach layer, with a built-in JumpServer provider that reuses the local `tmux-jumpserver` runner
 - broker idle auto-exit logic
 
 ## Repository Layout
@@ -29,7 +29,7 @@ internal/
   control/
   execx/
   ghostty/
-  jump/
+  remote/
   logx/
   model/
   observe/
@@ -117,7 +117,7 @@ tmux-ghostty help
 
 `tmux-ghostty help` is the authoritative detailed command reference. The README keeps the high-level command tree; use the CLI for the per-command descriptions. `tmux-ghostty -h` and `tmux-ghostty --help` are equivalent aliases.
 
-`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal can be adopted into a workspace. `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. `tmux-ghostty pane split` is the formal way to grow an existing workspace in-place.
+`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal can be adopted into a workspace. `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. In current-window mode, the CLI no longer launches a replacement Ghostty window implicitly; if the front window, focused terminal, or tmux context is unsuitable, it fails explicitly. `tmux-ghostty pane split` is the formal way to grow an existing workspace in-place.
 
 `tmux-ghostty version` prints build metadata. `tmux-ghostty self-update` installs a GitHub Release package over the current installation. `tmux-ghostty uninstall` removes both installed binaries and the current user's runtime data.
 
@@ -215,7 +215,7 @@ Current classification is prefix-based and intentionally conservative:
 
 - shell combiners and redirections such as `&&`, `||`, `;`, `|`, `>`, `>>`, `<`, `<<`, command substitution, or multi-line input are always `risky`
 - unknown commands also fall back to `risky`
-- when a pane is in a JumpServer menu stage, inputs such as `2801`, `/2801`, `1`, or `h` are treated as `nav` instead of `risky`
+- when a pane is in a remote provider navigation stage such as `menu`, `target_search`, or `selection`, inputs such as `2801`, `/2801`, `1`, or `h` are treated as `nav` instead of `risky`
 
 ## Runtime Paths
 
@@ -241,9 +241,11 @@ Useful environment variables:
 - `TMUX_GHOSTTY_BROKER_BIN`
 - `TMUX_GHOSTTY_RELEASE_REPO`
 - `TMUX_GHOSTTY_IDLE_TIMEOUT`
-- `TMUX_GHOSTTY_JUMP_PROFILE`
-- `TMUX_GHOSTTY_JUMP_RUNNER`
+- `TMUX_GHOSTTY_REMOTE_PROVIDER`
 - `TMUX_GHOSTTY_REMOTE_TMUX_SESSION`
+
+JumpServer-provider-specific variables:
+`TMUX_GHOSTTY_JUMP_PROFILE`, `TMUX_GHOSTTY_JUMP_RUNNER`
 
 ## GitHub Release Automation
 
@@ -261,5 +263,6 @@ If `HOMEBREW_TAP_TOKEN` is configured, the same workflow also commits the genera
 ## Notes
 
 - Ghostty is treated as the visible frontend only. `tmux` carries the actual text/data flow, so snapshot text comes from local `tmux`, not from Ghostty content APIs.
-- The JumpServer adapter assumes the existing local runner at `/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh` unless overridden by `TMUX_GHOSTTY_JUMP_RUNNER`.
+- `host attach` is wired through `internal/remote`, so additional remote providers such as direct SSH can be added without rewriting the broker/workspace core.
+- The current built-in `jumpserver` provider assumes the existing local runner at `/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh` unless overridden by `TMUX_GHOSTTY_JUMP_RUNNER`.
 - The current test suite uses real local `tmux` and fake Ghostty orchestration so it does not spawn GUI windows during automated runs.
