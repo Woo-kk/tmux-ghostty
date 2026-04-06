@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,18 +26,24 @@ const (
 	AttachReasonRemoteShellNotReady = "remote_shell_not_ready"
 	AttachReasonStageTimeout        = "stage_timeout"
 	AttachReasonUnknownStage        = "unknown_stage"
+
+	remoteTmuxMarkerPrefix     = "__TMUX_GHOSTTY_REMOTE_TMUX__"
+	remoteTmuxProbeDelay       = time.Second
+	remoteTmuxOutcomeSettleFor = 1500 * time.Millisecond
 )
 
 var (
-	ansiRE         = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
-	controlRE      = regexp.MustCompile(`[\x00-\x08\x0b-\x1f\x7f]`)
-	remotePromptRE = regexp.MustCompile(`(?m)^(?:\([^)]+\)\s*)?(?:\[[^\]]+\][#$%]|[^\s@]+@[^\s:]+[: ][^\n]*[#$]|[^ \t]+[#$%])\s*$`)
-	assetPromptRE  = regexp.MustCompile(`资产\[(.+?)\(([^)]+)\)\]`)
-	accountRowRE   = regexp.MustCompile(`(?m)^\s*(\d+)\s+\|\s+([^\|]+?)\s+\|\s+([^\|]+?)\s*$`)
+	ansiRE             = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	controlRE          = regexp.MustCompile(`[\x00-\x08\x0b-\x1f\x7f]`)
+	remotePromptRE     = regexp.MustCompile(`(?m)^(?:\([^)]+\)\s*)?(?:\[[^\]]+\][#$%]|[^\s@]+@[^\s:]+[: ][^\n]*[#$]|[^ \t]+[#$%])\s*$`)
+	assetPromptRE      = regexp.MustCompile(`资产\[(.+?)\(([^)]+)\)\]`)
+	accountRowRE       = regexp.MustCompile(`(?m)^\s*(\d+)\s+\|\s+([^\|]+?)\s+\|\s+([^\|]+?)\s*$`)
+	menuPromptTypedHRE = regexp.MustCompile(`(?m)^Opt>\s*h$`)
 )
 
 type tmuxController interface {
 	SendKeys(target string, text string) error
+	SendText(target string, text string) error
 	SendCtrlC(target string) error
 	CapturePane(target string, lines int) (string, error)
 }
@@ -48,15 +55,23 @@ type TargetMatch struct {
 }
 
 type ResolvedTarget struct {
-	Query          string            `json:"query"`
-	Name           string            `json:"name"`
-	Address        string            `json:"address"`
-	SelectionID    string            `json:"selection_id"`
-	SelectionLabel string            `json:"selection_label"`
-	RemoteSession  string            `json:"remote_session"`
-	Provider       string            `json:"provider"`
-	ResolvedVia    string            `json:"resolved_via"`
-	StageTrace     []model.PaneStage `json:"stage_trace"`
+	Query            string                 `json:"query"`
+	Name             string                 `json:"name"`
+	Address          string                 `json:"address"`
+	SelectionID      string                 `json:"selection_id"`
+	SelectionLabel   string                 `json:"selection_label"`
+	RemoteSession    string                 `json:"remote_session"`
+	RemoteTmuxStatus model.RemoteTmuxStatus `json:"remote_tmux_status"`
+	RemoteTmuxDetail string                 `json:"remote_tmux_detail,omitempty"`
+	Provider         string                 `json:"provider"`
+	ResolvedVia      string                 `json:"resolved_via"`
+	StageTrace       []model.PaneStage      `json:"stage_trace"`
+}
+
+type remoteTmuxOutcome struct {
+	Session string
+	Status  model.RemoteTmuxStatus
+	Detail  string
 }
 
 type AttachError struct {
@@ -112,6 +127,7 @@ type jumpServerProvider struct {
 	tmux          tmuxController
 	profilePath   string
 	runnerScript  string
+	runnerErr     error
 	remoteSession string
 }
 
@@ -125,10 +141,12 @@ func newProvider(client tmuxController) provider {
 	providerName := strings.ToLower(strings.TrimSpace(os.Getenv("TMUX_GHOSTTY_REMOTE_PROVIDER")))
 	switch providerName {
 	case "", ProviderJumpServer:
+		runnerScript, runnerErr := resolveRunnerPath()
 		return &jumpServerProvider{
 			tmux:          client,
 			profilePath:   resolveProfilePath(),
-			runnerScript:  resolveRunnerPath(),
+			runnerScript:  runnerScript,
+			runnerErr:     runnerErr,
 			remoteSession: resolveRemoteSession(),
 		}
 	default:
@@ -220,33 +238,21 @@ func (p *jumpServerProvider) attachTarget(localTarget string, query string) (Res
 	}
 
 	resolvedVia := ResolvedViaDirectQuery
-	switch stage {
-	case model.StageMenu, model.StageTargetSearch:
-		if err := p.tmux.SendKeys(localTarget, query); err != nil {
-			return ResolvedTarget{}, fmt.Errorf("search target: %w", err)
-		}
-		snapshot, stage, err = p.waitForStage(localTarget, 25*time.Second, model.StageMenu, model.StageTargetSearch, model.StageSelection, model.StageRemoteShell, model.StageAuthPrompt)
-		if err != nil {
-			return ResolvedTarget{}, wrapStageWaitError(stage, trace, err)
-		}
-		trace = appendTrace(trace, stage)
-	}
-
-	if stage == model.StageAuthPrompt {
-		return ResolvedTarget{}, newAttachError(AttachReasonAuthPrompt, stage, trace, nil, "remote provider requires manual authentication entry")
-	}
-
-	if stage == model.StageMenu || (stage == model.StageTargetSearch && containsNoAssets(snapshot)) {
+	if stage == model.StageMenu {
 		resolvedVia = ResolvedViaTargetListSearch
 		snapshot, stage, err = p.enterHostList(localTarget, stage, trace)
 		if err != nil {
 			return ResolvedTarget{}, err
 		}
 		trace = appendTrace(trace, stage)
+	}
+
+	switch stage {
+	case model.StageTargetSearch:
 		if err := p.tmux.SendKeys(localTarget, query); err != nil {
-			return ResolvedTarget{}, fmt.Errorf("search target in provider list: %w", err)
+			return ResolvedTarget{}, fmt.Errorf("search target: %w", err)
 		}
-		snapshot, stage, err = p.waitForStage(localTarget, 25*time.Second, model.StageTargetSearch, model.StageSelection, model.StageRemoteShell, model.StageAuthPrompt)
+		snapshot, stage, err = p.waitForQueryResolution(localTarget, 25*time.Second)
 		if err != nil {
 			return ResolvedTarget{}, wrapStageWaitError(stage, trace, err)
 		}
@@ -256,7 +262,8 @@ func (p *jumpServerProvider) attachTarget(localTarget string, query string) (Res
 	if stage == model.StageAuthPrompt {
 		return ResolvedTarget{}, newAttachError(AttachReasonAuthPrompt, stage, trace, nil, "remote provider requires manual authentication entry")
 	}
-	if stage == model.StageTargetSearch {
+
+	if containsNoAssets(snapshot) || stage == model.StageTargetSearch {
 		return ResolvedTarget{}, newAttachError(AttachReasonQueryNoResult, stage, trace, nil, "target query returned no attachable result")
 	}
 	if stage == model.StageMenu {
@@ -294,41 +301,50 @@ func (p *jumpServerProvider) attachTarget(localTarget string, query string) (Res
 	}
 
 	name, address := parseAsset(snapshot)
-	if err := p.ensureRemoteSession(localTarget, p.remoteSession); err != nil {
-		return ResolvedTarget{}, err
-	}
+	remoteTmux := p.ensureRemoteTmux(localTarget, p.remoteSession)
 
 	return ResolvedTarget{
-		Query:          query,
-		Name:           coalesce(name, query),
-		Address:        address,
-		SelectionID:    selectionID,
-		SelectionLabel: selectionLabel,
-		RemoteSession:  p.remoteSession,
-		Provider:       ProviderJumpServer,
-		ResolvedVia:    resolvedVia,
-		StageTrace:     trace,
+		Query:            query,
+		Name:             coalesce(name, query),
+		Address:          address,
+		SelectionID:      selectionID,
+		SelectionLabel:   selectionLabel,
+		RemoteSession:    remoteTmux.Session,
+		RemoteTmuxStatus: remoteTmux.Status,
+		RemoteTmuxDetail: remoteTmux.Detail,
+		Provider:         ProviderJumpServer,
+		ResolvedVia:      resolvedVia,
+		StageTrace:       trace,
 	}, nil
 }
 
 func (p *jumpServerProvider) ensureRemoteSession(localTarget string, remoteSession string) error {
+	outcome := p.ensureRemoteTmux(localTarget, remoteSession)
+	if outcome.Status == model.RemoteTmuxStatusAttached {
+		return nil
+	}
+	if outcome.Detail != "" {
+		return errors.New(outcome.Detail)
+	}
+	return fmt.Errorf("remote tmux status: %s", outcome.Status)
+}
+
+func (p *jumpServerProvider) ensureRemoteTmux(localTarget string, remoteSession string) remoteTmuxOutcome {
 	if remoteSession == "" {
 		remoteSession = p.remoteSession
 	}
-	command := "tmux has-session -t " + execx.ShellQuote(remoteSession) +
-		" 2>/dev/null || tmux new-session -d -s " + execx.ShellQuote(remoteSession) +
-		"; exec tmux attach-session -t " + execx.ShellQuote(remoteSession)
+	outcome := remoteTmuxOutcome{
+		Session: remoteSession,
+		Status:  model.RemoteTmuxStatusAttached,
+	}
+	marker := fmt.Sprintf("%s%d__", remoteTmuxMarkerPrefix, time.Now().UnixNano())
+	command := buildRemoteTmuxAttachCommand(remoteSession, marker)
 	if err := p.tmux.SendKeys(localTarget, command); err != nil {
-		return fmt.Errorf("attach remote tmux: %w", err)
+		outcome.Status = model.RemoteTmuxStatusFailed
+		outcome.Detail = fmt.Sprintf("send remote tmux attach command: %v", err)
+		return outcome
 	}
-	_, stage, err := p.waitForStage(localTarget, 15*time.Second, model.StageRemoteShell)
-	if err != nil {
-		return newAttachError(AttachReasonStageTimeout, stage, appendTrace(nil, stage), nil, err.Error())
-	}
-	if stage != model.StageRemoteShell {
-		return newAttachError(AttachReasonRemoteShellNotReady, stage, []model.PaneStage{stage}, nil, "remote tmux did not become ready")
-	}
-	return nil
+	return p.waitForRemoteTmuxOutcome(localTarget, remoteSession, marker, 15*time.Second)
 }
 
 func (p *jumpServerProvider) reconnect(localTarget string) error {
@@ -376,6 +392,9 @@ func (p *jumpServerProvider) validate() error {
 	if p.profilePath == "" {
 		return fmt.Errorf("jump profile not configured; set TMUX_GHOSTTY_JUMP_PROFILE")
 	}
+	if p.runnerErr != nil {
+		return fmt.Errorf("prepare jump runner: %w", p.runnerErr)
+	}
 	if p.runnerScript == "" {
 		return fmt.Errorf("jump runner not configured")
 	}
@@ -419,14 +438,39 @@ func (p *jumpServerProvider) waitForStage(localTarget string, timeout time.Durat
 	return lastText, lastStage, fmt.Errorf("timed out waiting for remote provider stage %v; last stage %s", expected, lastStage)
 }
 
+func (p *jumpServerProvider) waitForQueryResolution(localTarget string, timeout time.Duration) (string, model.PaneStage, error) {
+	deadline := time.Now().Add(timeout)
+	lastText := ""
+	lastStage := model.StageUnknown
+	for time.Now().Before(deadline) {
+		text, err := p.tmux.CapturePane(localTarget, 220)
+		if err != nil {
+			return "", model.StageUnknown, err
+		}
+		stage := DetectStage(text)
+		lastText = text
+		lastStage = stage
+		switch stage {
+		case model.StageSelection, model.StageRemoteShell, model.StageAuthPrompt:
+			return text, stage, nil
+		case model.StageTargetSearch, model.StageMenu:
+			if containsNoAssets(text) {
+				return text, stage, nil
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return lastText, lastStage, fmt.Errorf("timed out waiting for remote provider query resolution; last stage %s", lastStage)
+}
+
 func (p *jumpServerProvider) enterHostList(localTarget string, currentStage model.PaneStage, trace []model.PaneStage) (string, model.PaneStage, error) {
 	if currentStage == model.StageTargetSearch {
 		return "", model.StageTargetSearch, nil
 	}
-	if err := p.tmux.SendKeys(localTarget, "h"); err != nil {
+	if err := p.tmux.SendText(localTarget, "h"); err != nil {
 		return "", model.StageUnknown, fmt.Errorf("enter host list: %w", err)
 	}
-	snapshot, stage, err := p.waitForStage(localTarget, 15*time.Second, model.StageTargetSearch, model.StageAuthPrompt)
+	snapshot, stage, err := p.waitForHostList(localTarget, 15*time.Second)
 	if err != nil {
 		return "", stage, wrapStageWaitError(stage, trace, err)
 	}
@@ -434,6 +478,69 @@ func (p *jumpServerProvider) enterHostList(localTarget string, currentStage mode
 		return "", stage, newAttachError(AttachReasonAuthPrompt, stage, appendTrace(trace, stage), nil, "remote provider requires manual authentication entry")
 	}
 	return snapshot, stage, nil
+}
+
+func (p *jumpServerProvider) waitForHostList(localTarget string, timeout time.Duration) (string, model.PaneStage, error) {
+	deadline := time.Now().Add(timeout)
+	lastText := ""
+	lastStage := model.StageUnknown
+	confirmed := false
+	for time.Now().Before(deadline) {
+		text, err := p.tmux.CapturePane(localTarget, 220)
+		if err != nil {
+			return "", model.StageUnknown, err
+		}
+		stage := DetectStage(text)
+		lastText = text
+		lastStage = stage
+		switch stage {
+		case model.StageTargetSearch, model.StageAuthPrompt:
+			return text, stage, nil
+		}
+		if !confirmed && stage == model.StageMenu && needsHostListConfirmation(text) {
+			if err := p.tmux.SendKeys(localTarget, ""); err != nil {
+				return "", model.StageUnknown, fmt.Errorf("confirm host list: %w", err)
+			}
+			confirmed = true
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return lastText, lastStage, fmt.Errorf("timed out waiting for host list; last stage %s", lastStage)
+}
+
+func (p *jumpServerProvider) waitForRemoteTmuxOutcome(localTarget string, remoteSession string, marker string, timeout time.Duration) remoteTmuxOutcome {
+	outcome := remoteTmuxOutcome{
+		Session: remoteSession,
+		Status:  model.RemoteTmuxStatusAttached,
+	}
+	deadline := time.Now().Add(timeout)
+	markerSeenAt := time.Time{}
+	for time.Now().Before(deadline) {
+		text, err := p.tmux.CapturePane(localTarget, 220)
+		if err != nil {
+			outcome.Status = model.RemoteTmuxStatusFailed
+			outcome.Detail = fmt.Sprintf("capture pane while attaching remote tmux: %v", err)
+			return outcome
+		}
+		if status, detail, ok := parseRemoteTmuxStatus(text, marker); ok {
+			outcome.Status = status
+			outcome.Detail = detail
+			return outcome
+		}
+		cleaned := sanitizeSnapshot(text)
+		if markerSeenAt.IsZero() && strings.Contains(cleaned, marker) {
+			markerSeenAt = time.Now()
+		}
+		if !markerSeenAt.IsZero() && time.Since(markerSeenAt) >= remoteTmuxOutcomeSettleFor {
+			return outcome
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if markerSeenAt.IsZero() {
+		outcome.Status = model.RemoteTmuxStatusFailed
+		outcome.Detail = "timed out waiting for remote tmux attach to start"
+	}
+	return outcome
 }
 
 func sanitizeSnapshot(text string) string {
@@ -473,7 +580,7 @@ func appendTrace(trace []model.PaneStage, stage model.PaneStage) []model.PaneSta
 
 func isTransientStage(stage model.PaneStage) bool {
 	switch stage {
-	case model.StageConnecting, model.StageAuthPrompt:
+	case model.StageMenu, model.StageConnecting, model.StageAuthPrompt:
 		return true
 	default:
 		return false
@@ -544,6 +651,77 @@ func containsNoAssets(text string) bool {
 	return strings.Contains(lower, "no assets") || strings.Contains(lower, "没有资产") || strings.Contains(lower, "无资产")
 }
 
+func needsHostListConfirmation(text string) bool {
+	cleaned := sanitizeSnapshot(text)
+	if menuPromptTypedHRE.MatchString(cleaned) {
+		return true
+	}
+	line := lastNonEmptyLine(cleaned)
+	if !strings.HasPrefix(line, "Opt>") {
+		return false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, "Opt>")) == "h"
+}
+
+func buildRemoteTmuxAttachCommand(remoteSession string, marker string) string {
+	quotedMarker := execx.ShellQuote(marker)
+	quotedSession := execx.ShellQuote(remoteSession)
+	return strings.Join([]string{
+		"printf '%s\\n' " + quotedMarker,
+		fmt.Sprintf("sleep %d", int(remoteTmuxProbeDelay/time.Second)),
+		"if ! command -v tmux >/dev/null 2>&1; then",
+		"printf '%s unavailable tmux not found\\n' " + quotedMarker,
+		"elif tmux has-session -t " + quotedSession + " 2>/dev/null || tmux new-session -d -s " + quotedSession + "; then",
+		"if tmux attach-session -t " + quotedSession + "; then",
+		":",
+		"else",
+		"status=$?; printf '%s failed attach-session exit=%s\\n' " + quotedMarker + " \"$status\"",
+		"fi",
+		"else",
+		"status=$?; printf '%s failed prepare-session exit=%s\\n' " + quotedMarker + " \"$status\"",
+		"fi",
+	}, "; ")
+}
+
+func parseRemoteTmuxStatus(text string, marker string) (model.RemoteTmuxStatus, string, bool) {
+	cleaned := sanitizeSnapshot(text)
+	prefix := marker + " "
+	lines := strings.Split(cleaned, "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := strings.TrimSpace(lines[index])
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+		if len(fields) == 0 {
+			continue
+		}
+		status := model.RemoteTmuxStatus(fields[0])
+		detail := strings.TrimSpace(strings.TrimPrefix(line, prefix+fields[0]))
+		switch status {
+		case model.RemoteTmuxStatusUnavailable:
+			if detail == "" {
+				detail = "tmux is not available on the remote host"
+			}
+			return status, detail, true
+		case model.RemoteTmuxStatusFailed:
+			if detail == "" {
+				detail = "remote tmux attach failed"
+			}
+			return status, detail, true
+		}
+	}
+
+	lower := strings.ToLower(cleaned)
+	switch {
+	case strings.Contains(lower, "tmux: command not found"),
+		strings.Contains(lower, "exec: tmux: not found"),
+		strings.Contains(lower, "command not found: tmux"):
+		return model.RemoteTmuxStatusUnavailable, "tmux is not available on the remote host", true
+	}
+	return "", "", false
+}
+
 func newAttachError(reason string, stage model.PaneStage, trace []model.PaneStage, candidates []string, detail string) error {
 	return &AttachError{
 		Reason:     reason,
@@ -569,15 +747,11 @@ func resolveProfilePath() string {
 	return ""
 }
 
-func resolveRunnerPath() string {
+func resolveRunnerPath() (string, error) {
 	if value := os.Getenv("TMUX_GHOSTTY_JUMP_RUNNER"); value != "" {
-		return value
+		return value, nil
 	}
-	defaultPath := "/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh"
-	if _, err := os.Stat(defaultPath); err == nil {
-		return defaultPath
-	}
-	return ""
+	return ensureBundledRunner()
 }
 
 func resolveRemoteSession() string {

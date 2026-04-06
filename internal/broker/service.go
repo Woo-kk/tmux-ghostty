@@ -116,6 +116,11 @@ type workspaceCloseRequest struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
+type workspaceSplitCurrentRequest struct {
+	Direction string `json:"direction"`
+	Claim     string `json:"claim,omitempty"`
+}
+
 type paneIDRequest struct {
 	PaneID string `json:"pane_id"`
 }
@@ -215,6 +220,11 @@ func (s *Service) HandleRPC(ctx context.Context, method string, params json.RawM
 		result, err = s.InspectCurrent()
 	case "workspace.bootstrap_current":
 		result, err = s.BootstrapCurrent()
+	case "workspace.split_current":
+		var req workspaceSplitCurrentRequest
+		if err = decodeParams(params, &req); err == nil {
+			result, err = s.SplitCurrent(req.Direction, req.Claim)
+		}
 	case "workspace.adopt_current":
 		result, err = s.AdoptCurrent()
 	case "workspace.reconcile":
@@ -413,6 +423,67 @@ func (s *Service) BootstrapCurrent() (WorkspaceCreateResult, error) {
 	return s.createCurrentWindowWorkspaceLocked(bootstrapped, true)
 }
 
+func (s *Service) SplitCurrent(direction string, claim string) (WorkspaceCreateResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touchLocked()
+
+	if err := s.ghostty.RequireAvailable(); err != nil {
+		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, err)
+	}
+
+	focus, err := s.ghostty.InspectFocused()
+	if err != nil {
+		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, fmt.Errorf("could not resolve current Ghostty focus: %w", err))
+	}
+
+	if managed := s.findPaneByTerminalLocked(focus.Terminal.ID); managed != nil {
+		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("current terminal is already managed by pane %s; use pane split instead", managed.ID))
+	}
+
+	workspace := model.NewWorkspace()
+	workspace.LaunchMode = model.WorkspaceLaunchModeCurrentWindow
+	pane := model.NewPane(workspace.ID)
+	if claimValue := strings.TrimSpace(claim); claimValue != "" {
+		controller := model.Controller(strings.ToLower(claimValue))
+		if controller != model.ControllerAgent && controller != model.ControllerUser {
+			return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("unsupported claim actor: %s", claim))
+		}
+		pane.Controller = controller
+	}
+
+	if err := s.tmux.NewSession(pane.LocalTmuxSession); err != nil {
+		return WorkspaceCreateResult{}, newError(rpc.ReasonTmuxUnavailable, err)
+	}
+
+	terminalRef, err := s.ghostty.SplitTerminal(focus.Terminal.ID, direction, s.launchCommandForPane(pane))
+	if err != nil {
+		_ = s.tmux.KillSession(pane.LocalTmuxSession)
+		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, err)
+	}
+
+	workspace.GhosttyWindowID = focus.Window.ID
+	workspace.GhosttyTabID = focus.Tab.ID
+	workspace.PaneIDs = []string{pane.ID}
+	pane.GhosttyTerminalID = terminalRef.ID
+
+	s.state.Workspaces[workspace.ID] = workspace
+	s.state.Panes[pane.ID] = pane
+	if _, err := s.refreshPaneLocked(pane.ID); err != nil {
+		delete(s.state.Panes, pane.ID)
+		delete(s.state.Workspaces, workspace.ID)
+		_ = s.tmux.KillSession(pane.LocalTmuxSession)
+		return WorkspaceCreateResult{}, err
+	}
+	if err := s.saveLocked(); err != nil {
+		delete(s.state.Panes, pane.ID)
+		delete(s.state.Workspaces, workspace.ID)
+		_ = s.tmux.KillSession(pane.LocalTmuxSession)
+		return WorkspaceCreateResult{}, err
+	}
+	return WorkspaceCreateResult{Workspace: workspace, Pane: s.state.Panes[pane.ID]}, nil
+}
+
 func (s *Service) Reconcile() ([]model.Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -585,6 +656,8 @@ func (s *Service) AttachHost(paneID string, query string) (AttachResult, error) 
 	pane.HostQuery = query
 	pane.HostResolvedName = coalesce(resolved.Name, query)
 	pane.RemoteTmuxSession = resolved.RemoteSession
+	pane.RemoteTmuxStatus = resolved.RemoteTmuxStatus
+	pane.RemoteTmuxDetail = resolved.RemoteTmuxDetail
 	pane.Mode = model.ModeRunning
 	s.state.Panes[pane.ID] = pane
 	pane, err = s.refreshPaneLocked(pane.ID)
@@ -1554,18 +1627,20 @@ func (s *Service) launchCommandForPane(pane model.Pane) string {
 
 func toSnapshot(pane model.Pane) model.PaneSnapshot {
 	return model.PaneSnapshot{
-		PaneID:         pane.ID,
-		Text:           pane.LastSnapshot,
-		UpdatedAt:      pane.LastSnapshotAt,
-		Mode:           pane.Mode,
-		Stage:          pane.Stage,
-		Controller:     pane.Controller,
-		Prompt:         pane.LastPrompt,
-		SnapshotHash:   pane.LastSnapshotHash,
-		LocalSession:   pane.LocalTmuxSession,
-		LocalTarget:    pane.LocalTmuxTarget,
-		RemoteProvider: pane.RemoteProvider,
-		RemoteSession:  pane.RemoteTmuxSession,
+		PaneID:           pane.ID,
+		Text:             pane.LastSnapshot,
+		UpdatedAt:        pane.LastSnapshotAt,
+		Mode:             pane.Mode,
+		Stage:            pane.Stage,
+		Controller:       pane.Controller,
+		Prompt:           pane.LastPrompt,
+		SnapshotHash:     pane.LastSnapshotHash,
+		LocalSession:     pane.LocalTmuxSession,
+		LocalTarget:      pane.LocalTmuxTarget,
+		RemoteProvider:   pane.RemoteProvider,
+		RemoteSession:    pane.RemoteTmuxSession,
+		RemoteTmuxStatus: pane.RemoteTmuxStatus,
+		RemoteTmuxDetail: pane.RemoteTmuxDetail,
 	}
 }
 

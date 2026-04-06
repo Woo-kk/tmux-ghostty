@@ -73,6 +73,7 @@ func TestHelpTextIncludesCommandGroupsAndKeyCommands(t *testing.T) {
 		"Commands:",
 		"tmux-ghostty workspace create",
 		"tmux-ghostty workspace bootstrap-current",
+		"tmux-ghostty workspace split-current --direction up|down|left|right [--claim agent|user]",
 		"tmux-ghostty workspace adopt-current",
 		"tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]",
 		"tmux-ghostty command send <pane-id> <command...>",

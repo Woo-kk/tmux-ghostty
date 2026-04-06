@@ -265,5 +265,6 @@ If `HOMEBREW_TAP_TOKEN` is configured, the same workflow also commits the genera
 
 - Ghostty is treated as the visible frontend only. `tmux` carries the actual text/data flow, so snapshot text comes from local `tmux`, not from Ghostty content APIs.
 - `host attach` is wired through `internal/remote`, so additional remote providers such as direct SSH can be added without rewriting the broker/workspace core.
-- The current built-in `jumpserver` provider assumes the existing local runner at `/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh` unless overridden by `TMUX_GHOSTTY_JUMP_RUNNER`.
+- The built-in `jumpserver` provider now materializes its bundled runner and expect helper under the tmux-ghostty runtime directory automatically; `TMUX_GHOSTTY_JUMP_RUNNER` still overrides that default when needed.
+- `host attach` succeeds once the remote shell is ready. Remote tmux attach is best-effort and surfaces its outcome through `remote_tmux_status` and `remote_tmux_detail`.
 - The current test suite uses real local `tmux` and fake Ghostty orchestration so it does not spawn GUI windows during automated runs.

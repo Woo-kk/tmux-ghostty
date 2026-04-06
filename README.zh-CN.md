@@ -264,5 +264,6 @@ git push origin v0.1.0
 
 - Ghostty 只被当作可见前端使用。真正的文本/数据传递由 `tmux` 负责，所以快照文本来自本地 `tmux`，而不是 Ghostty 的内容 API。
 - `host attach` 现在通过 `internal/remote` 挂接 provider，后续可以扩到 SSH 直连或其他跳板机类型，而不用重写 broker/workspace 核心。
-- 当前内置的 `jumpserver` provider 默认假设本机已有 `/Users/guyuanshun/.codex/skills/tmux-jumpserver/scripts/run_jump_profile.sh`；如果需要，可通过 `TMUX_GHOSTTY_JUMP_RUNNER` 覆盖。
+- 当前内置的 `jumpserver` provider 会自动把仓库内置的 runner 和 expect helper 落到 tmux-ghostty 运行时目录；如果需要，仍然可以通过 `TMUX_GHOSTTY_JUMP_RUNNER` 覆盖默认值。
+- `host attach` 现在以远端 shell 就绪为成功条件；远端 tmux 只是 best-effort，其结果会通过 `remote_tmux_status` 和 `remote_tmux_detail` 暴露出来。
 - 当前测试套件使用真实本地 `tmux` 加 fake Ghostty 编排，因此自动化测试时不会真的弹出 GUI 窗口。

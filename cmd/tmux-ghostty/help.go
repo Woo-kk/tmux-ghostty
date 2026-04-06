@@ -36,6 +36,7 @@ var commandHelpGroups = []commandHelpGroup{
 			{Usage: "tmux-ghostty workspace create", Summary: "Create a workspace and its first pane."},
 			{Usage: "tmux-ghostty workspace inspect-current", Summary: "Inspect the currently focused Ghostty terminal without launching a new window and report whether it can be adopted into a workspace."},
 			{Usage: "tmux-ghostty workspace bootstrap-current", Summary: "If the current terminal is a local idle shell outside tmux, start a broker-owned tmux session in place and adopt it into a new current-window workspace."},
+			{Usage: "tmux-ghostty workspace split-current --direction up|down|left|right [--claim agent|user]", Summary: "Split the currently focused terminal in place and create the first broker-managed pane of a current-window workspace without opening a new window."},
 			{Usage: "tmux-ghostty workspace adopt-current", Summary: "Adopt the currently focused Ghostty terminal into a new workspace without opening a new window. Fail explicitly if the current focus is unsuitable."},
 			{Usage: "tmux-ghostty workspace reconcile", Summary: "Rebuild workspace state from the current Ghostty/tmux view."},
 			{Usage: "tmux-ghostty workspace close <workspace-id>", Summary: "Close a workspace and all panes that belong to it."},
@@ -85,7 +86,7 @@ var commandHelpGroups = []commandHelpGroup{
 var helpNotes = []string{
 	"Most workspace, pane, host, control, and command subcommands auto-start the local broker.",
 	`Use "tmux-ghostty workspace inspect-current" first when you want to stay in the current Ghostty window.`,
-	`If inspect-current reports a local shell outside tmux, run "tmux-ghostty workspace bootstrap-current". If it reports an existing tmux pane, use "workspace adopt-current".`,
+	`If inspect-current reports a local shell outside tmux, run "tmux-ghostty workspace bootstrap-current". If the current terminal is unsuitable but you still want to stay in the current window, run "tmux-ghostty workspace split-current --direction ...". If it reports an existing tmux pane, use "workspace adopt-current".`,
 	`Current-window commands fail explicitly when the focused Ghostty terminal cannot be adopted. They do not auto-open a replacement window.`,
 	`Use "tmux-ghostty pane list" to discover pane IDs before focus, snapshot, host, or control operations.`,
 	"Most query-style commands print JSON.",

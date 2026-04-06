@@ -1,0 +1,38 @@
+#!/usr/bin/expect -f
+
+if {$argc < 2} {
+  send_user "usage: jump_connect.exp <password-file> <command...>\n"
+  exit 1
+}
+
+set timeout 2
+set password_file [lindex $argv 0]
+set command [lrange $argv 1 end]
+
+set fh [open $password_file r]
+set password [string trim [read $fh]]
+close $fh
+
+spawn -noecho {*}$command
+
+expect {
+  -re "(?i)are you sure you want to continue connecting.*" {
+    send "yes\r"
+    exp_continue
+  }
+  -re "(?i)(password|verification code|passcode).*:" {
+    send -- "$password\r"
+    exp_continue
+  }
+  -re {Opt>|\[Host\]>|ID>} {
+    interact
+  }
+  timeout {
+    interact
+  }
+  eof {
+    exit [lindex [wait] 3]
+  }
+}
+
+interact

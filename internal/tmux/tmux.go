@@ -48,11 +48,20 @@ func (c *Client) KillSession(name string) error {
 func (c *Client) SendKeys(target string, text string) error {
 	target = normalizeTarget(target)
 	if text != "" {
-		if _, err := c.run(defaultTimeout, "send-keys", "-t", target, "-l", text); err != nil {
+		if err := c.SendText(target, text); err != nil {
 			return err
 		}
 	}
 	_, err := c.run(defaultTimeout, "send-keys", "-t", target, "Enter")
+	return err
+}
+
+func (c *Client) SendText(target string, text string) error {
+	target = normalizeTarget(target)
+	if text == "" {
+		return nil
+	}
+	_, err := c.run(defaultTimeout, "send-keys", "-t", target, "-l", text)
 	return err
 }
 

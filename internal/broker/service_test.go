@@ -59,7 +59,10 @@ type fakeGhosttyFocusResult struct {
 	err   error
 }
 
-type fakeRemoteClient struct{}
+type fakeRemoteClient struct {
+	attachResult remote.ResolvedTarget
+	attachErr    error
+}
 
 func newFakeGhosttyClient() *fakeGhosttyClient {
 	return &fakeGhosttyClient{
@@ -231,12 +234,26 @@ func (f fakeRemoteClient) SearchTarget(query string) ([]remote.TargetMatch, erro
 }
 
 func (f fakeRemoteClient) AttachTarget(localTarget string, query string) (remote.ResolvedTarget, error) {
-	return remote.ResolvedTarget{
-		Query:         query,
-		Name:          query,
-		RemoteSession: "tmux-ghostty",
-		Provider:      remote.ProviderJumpServer,
-	}, nil
+	if f.attachErr != nil {
+		return remote.ResolvedTarget{}, f.attachErr
+	}
+	result := f.attachResult
+	if strings.TrimSpace(result.Query) == "" {
+		result.Query = query
+	}
+	if strings.TrimSpace(result.Name) == "" {
+		result.Name = query
+	}
+	if strings.TrimSpace(result.RemoteSession) == "" {
+		result.RemoteSession = "tmux-ghostty"
+	}
+	if strings.TrimSpace(result.Provider) == "" {
+		result.Provider = remote.ProviderJumpServer
+	}
+	if result.RemoteTmuxStatus == "" {
+		result.RemoteTmuxStatus = model.RemoteTmuxStatusAttached
+	}
+	return result, nil
 }
 
 func (f fakeRemoteClient) EnsureRemoteSession(localTarget string, remoteSession string) error {
@@ -388,6 +405,49 @@ func TestInspectAndAdoptCurrent(t *testing.T) {
 	}
 	if result.Pane.OwnsLocalTmux {
 		t.Fatalf("adopted pane must not own the pre-existing tmux session")
+	}
+}
+
+func TestAttachHostPersistsRemoteTmuxMetadata(t *testing.T) {
+	service := newTestServiceWithRemote(t, fakeRemoteClient{
+		attachResult: remote.ResolvedTarget{
+			RemoteSession:    "tmux-ghostty",
+			Provider:         remote.ProviderJumpServer,
+			RemoteTmuxStatus: model.RemoteTmuxStatusUnavailable,
+			RemoteTmuxDetail: "tmux not found",
+		},
+	})
+	created, err := service.CreateWorkspace()
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(created.Workspace.ID)
+	})
+
+	result, err := service.AttachHost(created.Pane.ID, "2801")
+	if err != nil {
+		t.Fatalf("attach host: %v", err)
+	}
+	if result.Pane.RemoteTmuxStatus != model.RemoteTmuxStatusUnavailable {
+		t.Fatalf("expected pane remote tmux status unavailable, got %q", result.Pane.RemoteTmuxStatus)
+	}
+	if result.Pane.RemoteTmuxDetail != "tmux not found" {
+		t.Fatalf("unexpected pane remote tmux detail: %q", result.Pane.RemoteTmuxDetail)
+	}
+	if result.Target.RemoteTmuxStatus != model.RemoteTmuxStatusUnavailable {
+		t.Fatalf("expected target remote tmux status unavailable, got %q", result.Target.RemoteTmuxStatus)
+	}
+
+	snapshot, err := service.SnapshotPane(created.Pane.ID)
+	if err != nil {
+		t.Fatalf("snapshot pane: %v", err)
+	}
+	if snapshot.RemoteTmuxStatus != model.RemoteTmuxStatusUnavailable {
+		t.Fatalf("expected snapshot remote tmux status unavailable, got %q", snapshot.RemoteTmuxStatus)
+	}
+	if snapshot.RemoteTmuxDetail != "tmux not found" {
+		t.Fatalf("unexpected snapshot remote tmux detail: %q", snapshot.RemoteTmuxDetail)
 	}
 }
 
@@ -627,6 +687,49 @@ func TestBootstrapCurrentFailsForRemoteShell(t *testing.T) {
 	}
 	if len(service.state.Workspaces) != 0 {
 		t.Fatalf("expected no workspace to be created for remote shell bootstrap attempt")
+	}
+}
+
+func TestSplitCurrentUsesFocusedWindowWithoutLaunch(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	window, terminal, err := fakeGhostty.NewWindow("")
+	if err != nil {
+		t.Fatalf("seed focused window: %v", err)
+	}
+	fakeGhostty.newWindowCalls = 0
+
+	result, err := service.SplitCurrent("up", "agent")
+	if err != nil {
+		t.Fatalf("split current: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(result.Workspace.ID)
+	})
+
+	if result.Workspace.GhosttyWindowID != window.ID {
+		t.Fatalf("expected split-current workspace to stay in focused window")
+	}
+	if result.Workspace.LaunchMode != model.WorkspaceLaunchModeCurrentWindow {
+		t.Fatalf("expected split-current workspace launch mode current_window, got %q", result.Workspace.LaunchMode)
+	}
+	if result.Pane.Controller != model.ControllerAgent {
+		t.Fatalf("expected claimed pane controller agent, got %q", result.Pane.Controller)
+	}
+	if result.Pane.GhosttyTerminalID == terminal.ID {
+		t.Fatalf("expected split-current to create a new terminal instead of reusing the focused terminal")
+	}
+	if !result.Pane.OwnsLocalTmux {
+		t.Fatalf("expected split-current pane to own its local tmux session")
+	}
+	if fakeGhostty.requireCalls == 0 {
+		t.Fatalf("expected split-current to probe Ghostty availability")
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected split-current not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected split-current not to create a new window, got %d", fakeGhostty.newWindowCalls)
 	}
 }
 
@@ -978,6 +1081,11 @@ func TestRPCServerRoundTrip(t *testing.T) {
 
 func newTestService(t *testing.T) *Service {
 	t.Helper()
+	return newTestServiceWithRemote(t, fakeRemoteClient{})
+}
+
+func newTestServiceWithRemote(t *testing.T, remoteClient RemoteClient) *Service {
+	t.Helper()
 	dir := t.TempDir()
 	logger, err := logx.New("")
 	if err != nil {
@@ -992,7 +1100,7 @@ func newTestService(t *testing.T) *Service {
 		logger,
 		newFakeGhosttyClient(),
 		tmuxClient,
-		fakeRemoteClient{},
+		remoteClient,
 	)
 	if err != nil {
 		t.Fatalf("create service: %v", err)

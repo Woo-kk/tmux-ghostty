@@ -338,6 +338,27 @@ func runWorkspace(ctx context.Context, paths app.Paths, args []string) int {
 		}
 		printJSON(result)
 		return 0
+	case "split-current":
+		flags := flag.NewFlagSet("workspace split-current", flag.ContinueOnError)
+		flags.SetOutput(os.Stderr)
+		direction := flags.String("direction", "", "split direction")
+		claim := flags.String("claim", "", "optional controller for the new pane")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 1
+		}
+		if strings.TrimSpace(*direction) == "" {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty workspace split-current --direction up|down|left|right [--claim agent|user]")
+			return 1
+		}
+		var result any
+		if err := client.Call(ctx, "workspace.split_current", map[string]any{
+			"direction": *direction,
+			"claim":     *claim,
+		}, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
 	case "adopt-current":
 		var result any
 		if err := client.Call(ctx, "workspace.adopt_current", nil, &result); err != nil {

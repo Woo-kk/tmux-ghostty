@@ -56,6 +56,14 @@ const (
 	StageAuthPrompt   PaneStage = "auth_prompt"
 )
 
+type RemoteTmuxStatus string
+
+const (
+	RemoteTmuxStatusAttached    RemoteTmuxStatus = "attached"
+	RemoteTmuxStatusUnavailable RemoteTmuxStatus = "unavailable"
+	RemoteTmuxStatusFailed      RemoteTmuxStatus = "failed"
+)
+
 type RiskLevel string
 
 const (
@@ -94,25 +102,27 @@ type Workspace struct {
 }
 
 type Pane struct {
-	ID                string     `json:"id"`
-	WorkspaceID       string     `json:"workspace_id"`
-	RemoteProvider    string     `json:"remote_provider"`
-	HostQuery         string     `json:"host_query"`
-	HostResolvedName  string     `json:"host_resolved_name"`
-	GhosttyTerminalID string     `json:"ghostty_terminal_id"`
-	LocalTmuxSession  string     `json:"local_tmux_session"`
-	LocalTmuxTarget   string     `json:"local_tmux_target"`
-	OwnsLocalTmux     bool       `json:"owns_local_tmux"`
-	RemoteTmuxSession string     `json:"remote_tmux_session"`
-	Controller        Controller `json:"controller"`
-	Mode              PaneMode   `json:"mode"`
-	Stage             PaneStage  `json:"stage"`
-	LastSnapshotHash  string     `json:"last_snapshot_hash"`
-	LastSnapshot      string     `json:"last_snapshot"`
-	LastPrompt        string     `json:"last_prompt"`
-	LastExitCode      int        `json:"last_exit_code"`
-	LastActivityAt    time.Time  `json:"last_activity_at"`
-	LastSnapshotAt    time.Time  `json:"last_snapshot_at"`
+	ID                string           `json:"id"`
+	WorkspaceID       string           `json:"workspace_id"`
+	RemoteProvider    string           `json:"remote_provider"`
+	HostQuery         string           `json:"host_query"`
+	HostResolvedName  string           `json:"host_resolved_name"`
+	GhosttyTerminalID string           `json:"ghostty_terminal_id"`
+	LocalTmuxSession  string           `json:"local_tmux_session"`
+	LocalTmuxTarget   string           `json:"local_tmux_target"`
+	OwnsLocalTmux     bool             `json:"owns_local_tmux"`
+	RemoteTmuxSession string           `json:"remote_tmux_session"`
+	RemoteTmuxStatus  RemoteTmuxStatus `json:"remote_tmux_status"`
+	RemoteTmuxDetail  string           `json:"remote_tmux_detail"`
+	Controller        Controller       `json:"controller"`
+	Mode              PaneMode         `json:"mode"`
+	Stage             PaneStage        `json:"stage"`
+	LastSnapshotHash  string           `json:"last_snapshot_hash"`
+	LastSnapshot      string           `json:"last_snapshot"`
+	LastPrompt        string           `json:"last_prompt"`
+	LastExitCode      int              `json:"last_exit_code"`
+	LastActivityAt    time.Time        `json:"last_activity_at"`
+	LastSnapshotAt    time.Time        `json:"last_snapshot_at"`
 }
 
 type Action struct {
@@ -137,18 +147,20 @@ type State struct {
 }
 
 type PaneSnapshot struct {
-	PaneID         string     `json:"pane_id"`
-	Text           string     `json:"text"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	Mode           PaneMode   `json:"mode"`
-	Stage          PaneStage  `json:"stage"`
-	Controller     Controller `json:"controller"`
-	Prompt         string     `json:"prompt"`
-	SnapshotHash   string     `json:"snapshot_hash"`
-	LocalSession   string     `json:"local_session"`
-	LocalTarget    string     `json:"local_target"`
-	RemoteProvider string     `json:"remote_provider"`
-	RemoteSession  string     `json:"remote_session"`
+	PaneID           string           `json:"pane_id"`
+	Text             string           `json:"text"`
+	UpdatedAt        time.Time        `json:"updated_at"`
+	Mode             PaneMode         `json:"mode"`
+	Stage            PaneStage        `json:"stage"`
+	Controller       Controller       `json:"controller"`
+	Prompt           string           `json:"prompt"`
+	SnapshotHash     string           `json:"snapshot_hash"`
+	LocalSession     string           `json:"local_session"`
+	LocalTarget      string           `json:"local_target"`
+	RemoteProvider   string           `json:"remote_provider"`
+	RemoteSession    string           `json:"remote_session"`
+	RemoteTmuxStatus RemoteTmuxStatus `json:"remote_tmux_status"`
+	RemoteTmuxDetail string           `json:"remote_tmux_detail"`
 }
 
 type BrokerStatus struct {
