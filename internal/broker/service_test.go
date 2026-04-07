@@ -354,6 +354,97 @@ func TestCommandFlowWithTmux(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceOpensNewGhosttyWindow(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	fakeGhostty.newWindowCalls = 0
+
+	created, err := service.CreateWorkspace()
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(created.Workspace.ID)
+	})
+
+	if created.Workspace.LaunchMode != model.WorkspaceLaunchModeNewWindow {
+		t.Fatalf("expected create workspace launch mode new_window, got %q", created.Workspace.LaunchMode)
+	}
+	if strings.TrimSpace(created.Workspace.GhosttyWindowID) == "" {
+		t.Fatalf("expected create workspace to record a Ghostty window id")
+	}
+	if strings.TrimSpace(created.Pane.GhosttyTerminalID) == "" {
+		t.Fatalf("expected create workspace to record a Ghostty terminal id")
+	}
+	if fakeGhostty.newWindowCalls != 1 {
+		t.Fatalf("expected create workspace to create exactly one Ghostty window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestListWorkspaceWindowsIncludesManagedMetadata(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+
+	unmanagedWindow, unmanagedTerminal, err := fakeGhostty.NewWindow("")
+	if err != nil {
+		t.Fatalf("seed unmanaged window: %v", err)
+	}
+	created, err := service.CreateWorkspace()
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(created.Workspace.ID)
+	})
+	fakeGhostty.ensureCalls = 0
+	fakeGhostty.newWindowCalls = 0
+
+	targets, err := service.ListWorkspaceWindows()
+	if err != nil {
+		t.Fatalf("list workspace windows: %v", err)
+	}
+
+	var unmanagedTarget *model.WorkspaceTerminalTarget
+	var managedTarget *model.WorkspaceTerminalTarget
+	for index := range targets {
+		target := &targets[index]
+		switch target.TerminalID {
+		case unmanagedTerminal.ID:
+			unmanagedTarget = target
+		case created.Pane.GhosttyTerminalID:
+			managedTarget = target
+		}
+	}
+
+	if unmanagedTarget == nil {
+		t.Fatalf("expected unmanaged terminal %s in list result: %+v", unmanagedTerminal.ID, targets)
+	}
+	if managedTarget == nil {
+		t.Fatalf("expected managed terminal %s in list result: %+v", created.Pane.GhosttyTerminalID, targets)
+	}
+	if unmanagedTarget.Managed {
+		t.Fatalf("expected unmanaged terminal metadata, got %+v", unmanagedTarget)
+	}
+	if unmanagedTarget.WindowID != unmanagedWindow.ID {
+		t.Fatalf("expected unmanaged target to stay in window %s, got %+v", unmanagedWindow.ID, unmanagedTarget)
+	}
+	if !managedTarget.Managed {
+		t.Fatalf("expected managed terminal metadata, got %+v", managedTarget)
+	}
+	if managedTarget.ManagedPaneID != created.Pane.ID {
+		t.Fatalf("expected managed pane id %s, got %+v", created.Pane.ID, managedTarget)
+	}
+	if managedTarget.ManagedWorkspaceID != created.Workspace.ID {
+		t.Fatalf("expected managed workspace id %s, got %+v", created.Workspace.ID, managedTarget)
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected list workspace windows not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected list workspace windows not to create a new Ghostty window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
 func TestInspectAndAdoptCurrent(t *testing.T) {
 	service := newTestService(t)
 	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
@@ -730,6 +821,126 @@ func TestSplitCurrentUsesFocusedWindowWithoutLaunch(t *testing.T) {
 	}
 	if fakeGhostty.newWindowCalls != 0 {
 		t.Fatalf("expected split-current not to create a new window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestSplitCurrentManagedFocusSuggestsExplicitTargeting(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.CreateWorkspace()
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(created.Workspace.ID)
+	})
+
+	_, err = service.SplitCurrent("up", "")
+	if err == nil {
+		t.Fatalf("expected split-current to fail for a managed focused terminal")
+	}
+	if !strings.Contains(err.Error(), "workspace split-current only targets the focused Ghostty terminal") {
+		t.Fatalf("expected split-current guidance in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "workspace list-windows") || !strings.Contains(err.Error(), "workspace split-terminal") {
+		t.Fatalf("expected explicit-target guidance in error, got %v", err)
+	}
+}
+
+func TestSplitTerminalUsesExplicitTargetWithoutFocus(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+
+	targetWindow, targetTerminal, err := fakeGhostty.NewWindow("")
+	if err != nil {
+		t.Fatalf("seed target window: %v", err)
+	}
+	if _, _, err := fakeGhostty.NewWindow(""); err != nil {
+		t.Fatalf("seed focused window: %v", err)
+	}
+	fakeGhostty.newWindowCalls = 0
+
+	result, err := service.SplitTerminal(targetTerminal.ID, "up", "agent")
+	if err != nil {
+		t.Fatalf("split terminal: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(result.Workspace.ID)
+	})
+
+	if result.Workspace.GhosttyWindowID != targetWindow.ID {
+		t.Fatalf("expected split-terminal workspace to stay in target window %s, got %+v", targetWindow.ID, result.Workspace)
+	}
+	if result.Workspace.LaunchMode != model.WorkspaceLaunchModeCurrentWindow {
+		t.Fatalf("expected split-terminal launch mode current_window, got %q", result.Workspace.LaunchMode)
+	}
+	if result.Pane.Controller != model.ControllerAgent {
+		t.Fatalf("expected claimed pane controller agent, got %q", result.Pane.Controller)
+	}
+	if result.Pane.GhosttyTerminalID == targetTerminal.ID {
+		t.Fatalf("expected split-terminal to create a new terminal instead of reusing the target terminal")
+	}
+	if !result.Pane.OwnsLocalTmux {
+		t.Fatalf("expected split-terminal pane to own its local tmux session")
+	}
+	if fakeGhostty.requireCalls == 0 {
+		t.Fatalf("expected split-terminal to probe Ghostty availability")
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected split-terminal not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected split-terminal not to create a new Ghostty window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestSplitTerminalRejectsUnknownTerminal(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	if _, _, err := fakeGhostty.NewWindow(""); err != nil {
+		t.Fatalf("seed Ghostty window: %v", err)
+	}
+	fakeGhostty.newWindowCalls = 0
+
+	_, err := service.SplitTerminal("missing-terminal", "up", "")
+	if err == nil {
+		t.Fatalf("expected split-terminal to fail for an unknown terminal")
+	}
+	var brokerErr *BrokerError
+	if !errors.As(err, &brokerErr) || brokerErr.Reason != rpc.ReasonInvalidState {
+		t.Fatalf("expected invalid_state broker error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ghostty terminal not found: missing-terminal") {
+		t.Fatalf("unexpected split-terminal error: %v", err)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected split-terminal unknown target not to create a new Ghostty window, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestSplitTerminalRejectsManagedTerminal(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+	created, err := service.CreateWorkspace()
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(created.Workspace.ID)
+	})
+	fakeGhostty.newWindowCalls = 0
+
+	_, err = service.SplitTerminal(created.Pane.GhosttyTerminalID, "up", "")
+	if err == nil {
+		t.Fatalf("expected split-terminal to fail for a managed terminal")
+	}
+	if !strings.Contains(err.Error(), created.Pane.ID) || !strings.Contains(err.Error(), "use pane split instead") {
+		t.Fatalf("expected pane split guidance in error, got %v", err)
+	}
+	if len(service.state.Workspaces) != 1 || len(service.state.Panes) != 1 {
+		t.Fatalf("expected managed-target split-terminal failure to leave state unchanged")
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected split-terminal managed target not to create a new Ghostty window, got %d", fakeGhostty.newWindowCalls)
 	}
 }
 

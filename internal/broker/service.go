@@ -121,6 +121,12 @@ type workspaceSplitCurrentRequest struct {
 	Claim     string `json:"claim,omitempty"`
 }
 
+type workspaceSplitTerminalRequest struct {
+	TerminalID string `json:"terminal_id"`
+	Direction  string `json:"direction"`
+	Claim      string `json:"claim,omitempty"`
+}
+
 type paneIDRequest struct {
 	PaneID string `json:"pane_id"`
 }
@@ -162,6 +168,12 @@ type currentTerminalProbe struct {
 	TmuxPane      string `json:"tmux_pane,omitempty"`
 	RemoteShell   bool   `json:"remote_shell,omitempty"`
 	TmuxAvailable bool   `json:"tmux_available,omitempty"`
+}
+
+type ghosttyTerminalContext struct {
+	Window   ghostty.WindowRef
+	Tab      ghostty.TabRef
+	Terminal ghostty.TerminalRef
 }
 
 func NewService(statePath string, actionsPath string, idleTimeout time.Duration, log *logx.Logger, ghosttyClient GhosttyClient, tmuxClient TmuxClient, remoteClient RemoteClient) (*Service, error) {
@@ -218,12 +230,19 @@ func (s *Service) HandleRPC(ctx context.Context, method string, params json.RawM
 		result, err = s.CreateWorkspace()
 	case "workspace.inspect_current":
 		result, err = s.InspectCurrent()
+	case "workspace.list_windows":
+		result, err = s.ListWorkspaceWindows()
 	case "workspace.bootstrap_current":
 		result, err = s.BootstrapCurrent()
 	case "workspace.split_current":
 		var req workspaceSplitCurrentRequest
 		if err = decodeParams(params, &req); err == nil {
 			result, err = s.SplitCurrent(req.Direction, req.Claim)
+		}
+	case "workspace.split_terminal":
+		var req workspaceSplitTerminalRequest
+		if err = decodeParams(params, &req); err == nil {
+			result, err = s.SplitTerminal(req.TerminalID, req.Direction, req.Claim)
 		}
 	case "workspace.adopt_current":
 		result, err = s.AdoptCurrent()
@@ -364,6 +383,44 @@ func (s *Service) InspectCurrent() (CurrentFocusInspection, error) {
 	return inspection, s.saveLocked()
 }
 
+func (s *Service) ListWorkspaceWindows() ([]model.WorkspaceTerminalTarget, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touchLocked()
+
+	if err := s.ghostty.RequireAvailable(); err != nil {
+		return nil, newError(rpc.ReasonGhosttyUnavailable, err)
+	}
+
+	contexts, err := s.listGhosttyTerminalContextsLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	targets := make([]model.WorkspaceTerminalTarget, 0, len(contexts))
+	for _, terminalContext := range contexts {
+		target := model.WorkspaceTerminalTarget{
+			WindowID:         terminalContext.Window.ID,
+			WindowName:       terminalContext.Window.Name,
+			TabID:            terminalContext.Tab.ID,
+			TabName:          terminalContext.Tab.Name,
+			TabIndex:         terminalContext.Tab.Index,
+			TabSelected:      terminalContext.Tab.Selected,
+			TerminalID:       terminalContext.Terminal.ID,
+			TerminalName:     terminalContext.Terminal.Name,
+			WorkingDirectory: terminalContext.Terminal.WorkingDirectory,
+		}
+		if managed := s.findPaneByTerminalLocked(terminalContext.Terminal.ID); managed != nil {
+			target.Managed = true
+			target.ManagedPaneID = managed.ID
+			target.ManagedWorkspaceID = managed.WorkspaceID
+		}
+		targets = append(targets, target)
+	}
+
+	return targets, s.saveLocked()
+}
+
 func (s *Service) AdoptCurrent() (WorkspaceCreateResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -438,50 +495,35 @@ func (s *Service) SplitCurrent(direction string, claim string) (WorkspaceCreateR
 	}
 
 	if managed := s.findPaneByTerminalLocked(focus.Terminal.ID); managed != nil {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("current terminal is already managed by pane %s; use pane split instead", managed.ID))
+		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("workspace split-current only targets the focused Ghostty terminal. The focused terminal is already managed by pane %s; use pane split instead. To target a different existing Ghostty terminal, run workspace list-windows and workspace split-terminal --terminal-id <id> --direction ...", managed.ID))
 	}
 
-	workspace := model.NewWorkspace()
-	workspace.LaunchMode = model.WorkspaceLaunchModeCurrentWindow
-	pane := model.NewPane(workspace.ID)
-	if claimValue := strings.TrimSpace(claim); claimValue != "" {
-		controller := model.Controller(strings.ToLower(claimValue))
-		if controller != model.ControllerAgent && controller != model.ControllerUser {
-			return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("unsupported claim actor: %s", claim))
-		}
-		pane.Controller = controller
-	}
+	return s.createSplitWorkspaceLocked(focus.Window.ID, focus.Tab.ID, focus.Terminal.ID, direction, claim)
+}
 
-	if err := s.tmux.NewSession(pane.LocalTmuxSession); err != nil {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonTmuxUnavailable, err)
-	}
+func (s *Service) SplitTerminal(terminalID string, direction string, claim string) (WorkspaceCreateResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touchLocked()
 
-	terminalRef, err := s.ghostty.SplitTerminal(focus.Terminal.ID, direction, s.launchCommandForPane(pane))
-	if err != nil {
-		_ = s.tmux.KillSession(pane.LocalTmuxSession)
+	if err := s.ghostty.RequireAvailable(); err != nil {
 		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, err)
 	}
 
-	workspace.GhosttyWindowID = focus.Window.ID
-	workspace.GhosttyTabID = focus.Tab.ID
-	workspace.PaneIDs = []string{pane.ID}
-	pane.GhosttyTerminalID = terminalRef.ID
+	trimmedTerminalID := strings.TrimSpace(terminalID)
+	if trimmedTerminalID == "" {
+		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("terminal id is required"))
+	}
 
-	s.state.Workspaces[workspace.ID] = workspace
-	s.state.Panes[pane.ID] = pane
-	if _, err := s.refreshPaneLocked(pane.ID); err != nil {
-		delete(s.state.Panes, pane.ID)
-		delete(s.state.Workspaces, workspace.ID)
-		_ = s.tmux.KillSession(pane.LocalTmuxSession)
+	terminalContext, err := s.resolveGhosttyTerminalLocked(trimmedTerminalID)
+	if err != nil {
 		return WorkspaceCreateResult{}, err
 	}
-	if err := s.saveLocked(); err != nil {
-		delete(s.state.Panes, pane.ID)
-		delete(s.state.Workspaces, workspace.ID)
-		_ = s.tmux.KillSession(pane.LocalTmuxSession)
-		return WorkspaceCreateResult{}, err
+	if managed := s.findPaneByTerminalLocked(terminalContext.Terminal.ID); managed != nil {
+		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("terminal %s is already managed by pane %s; use pane split instead", terminalContext.Terminal.ID, managed.ID))
 	}
-	return WorkspaceCreateResult{Workspace: workspace, Pane: s.state.Panes[pane.ID]}, nil
+
+	return s.createSplitWorkspaceLocked(terminalContext.Window.ID, terminalContext.Tab.ID, terminalContext.Terminal.ID, direction, claim)
 }
 
 func (s *Service) Reconcile() ([]model.Workspace, error) {
@@ -599,12 +641,8 @@ func (s *Service) SplitPane(paneID string, direction string, claim string) (mode
 
 	newPane := model.NewPane(anchorPane.WorkspaceID)
 	newPane.OwnsLocalTmux = true
-	if claimValue := strings.TrimSpace(claim); claimValue != "" {
-		controller := model.Controller(strings.ToLower(claimValue))
-		if controller != model.ControllerAgent && controller != model.ControllerUser {
-			return model.Pane{}, newError(rpc.ReasonInvalidState, fmt.Errorf("unsupported claim actor: %s", claim))
-		}
-		newPane.Controller = controller
+	if err := applyClaimToPane(&newPane, claim); err != nil {
+		return model.Pane{}, err
 	}
 
 	if err := s.tmux.NewSession(newPane.LocalTmuxSession); err != nil {
@@ -968,26 +1006,14 @@ func (s *Service) loadGhosttyTopologyLocked() (map[string]bool, map[string]bool,
 	existingTabs := map[string]bool{}
 	existingWindows := map[string]bool{}
 
-	windows, err := s.ghostty.ListWindows()
+	contexts, err := s.listGhosttyTerminalContextsLocked()
 	if err != nil {
-		return nil, nil, nil, newError(rpc.ReasonGhosttyUnavailable, err)
+		return nil, nil, nil, err
 	}
-	for _, window := range windows {
-		existingWindows[window.ID] = true
-		tabs, err := s.ghostty.ListTabs(window.ID)
-		if err != nil {
-			return nil, nil, nil, newError(rpc.ReasonGhosttyUnavailable, err)
-		}
-		for _, tab := range tabs {
-			existingTabs[tab.ID] = true
-			terminals, err := s.ghostty.ListTerminals(tab.ID)
-			if err != nil {
-				return nil, nil, nil, newError(rpc.ReasonGhosttyUnavailable, err)
-			}
-			for _, terminal := range terminals {
-				existingTerminals[terminal.ID] = true
-			}
-		}
+	for _, terminalContext := range contexts {
+		existingWindows[terminalContext.Window.ID] = true
+		existingTabs[terminalContext.Tab.ID] = true
+		existingTerminals[terminalContext.Terminal.ID] = true
 	}
 	return existingTerminals, existingTabs, existingWindows, nil
 }
@@ -1195,6 +1221,21 @@ func sameFocusContext(left ghostty.FocusContext, right ghostty.FocusContext) boo
 	return left.Window.ID == right.Window.ID &&
 		left.Tab.ID == right.Tab.ID &&
 		left.Terminal.ID == right.Terminal.ID
+}
+
+func applyClaimToPane(pane *model.Pane, claim string) error {
+	claimValue := strings.TrimSpace(claim)
+	if claimValue == "" {
+		return nil
+	}
+
+	controller := model.Controller(strings.ToLower(claimValue))
+	if controller != model.ControllerAgent && controller != model.ControllerUser {
+		return newError(rpc.ReasonInvalidState, fmt.Errorf("unsupported claim actor: %s", claim))
+	}
+
+	pane.Controller = controller
+	return nil
 }
 
 func (s *Service) findPaneByTerminalLocked(terminalID string) *model.Pane {
@@ -1478,6 +1519,65 @@ func (s *Service) workspaceLaunchModeLocked(workspace model.Workspace) model.Wor
 	return model.WorkspaceLaunchModeNewWindow
 }
 
+func (s *Service) listGhosttyTerminalContextsLocked() ([]ghosttyTerminalContext, error) {
+	windows, err := s.ghostty.ListWindows()
+	if err != nil {
+		return nil, newError(rpc.ReasonGhosttyUnavailable, err)
+	}
+	slices.SortFunc(windows, func(left, right ghostty.WindowRef) int {
+		return strings.Compare(left.ID, right.ID)
+	})
+
+	contexts := make([]ghosttyTerminalContext, 0)
+	for _, window := range windows {
+		tabs, err := s.ghostty.ListTabs(window.ID)
+		if err != nil {
+			return nil, newError(rpc.ReasonGhosttyUnavailable, err)
+		}
+		slices.SortFunc(tabs, func(left, right ghostty.TabRef) int {
+			if left.Index < right.Index {
+				return -1
+			}
+			if left.Index > right.Index {
+				return 1
+			}
+			return strings.Compare(left.ID, right.ID)
+		})
+
+		for _, tab := range tabs {
+			terminals, err := s.ghostty.ListTerminals(tab.ID)
+			if err != nil {
+				return nil, newError(rpc.ReasonGhosttyUnavailable, err)
+			}
+			slices.SortFunc(terminals, func(left, right ghostty.TerminalRef) int {
+				return strings.Compare(left.ID, right.ID)
+			})
+			for _, terminal := range terminals {
+				contexts = append(contexts, ghosttyTerminalContext{
+					Window:   window,
+					Tab:      tab,
+					Terminal: terminal,
+				})
+			}
+		}
+	}
+
+	return contexts, nil
+}
+
+func (s *Service) resolveGhosttyTerminalLocked(terminalID string) (ghosttyTerminalContext, error) {
+	contexts, err := s.listGhosttyTerminalContextsLocked()
+	if err != nil {
+		return ghosttyTerminalContext{}, err
+	}
+	for _, terminalContext := range contexts {
+		if terminalContext.Terminal.ID == terminalID {
+			return terminalContext, nil
+		}
+	}
+	return ghosttyTerminalContext{}, newError(rpc.ReasonInvalidState, fmt.Errorf("ghostty terminal not found: %s", terminalID))
+}
+
 func (s *Service) probeCurrentTerminal(terminalID string) (currentTerminalProbe, error) {
 	probeID := fmt.Sprintf("%d", time.Now().UnixNano())
 	probePath := filepath.Join("/tmp", "tmux-ghostty-probe-"+probeID+".json")
@@ -1623,6 +1723,49 @@ func (s *Service) shouldAutoExitLocked(now time.Time) bool {
 
 func (s *Service) launchCommandForPane(pane model.Pane) string {
 	return "/bin/zsh -lc " + execx.ShellQuote(s.tmux.AttachCommand(pane.LocalTmuxSession))
+}
+
+func (s *Service) createSplitWorkspaceLocked(windowID string, tabID string, anchorTerminalID string, direction string, claim string) (WorkspaceCreateResult, error) {
+	workspace := model.NewWorkspace()
+	workspace.LaunchMode = model.WorkspaceLaunchModeCurrentWindow
+
+	pane := model.NewPane(workspace.ID)
+	pane.OwnsLocalTmux = true
+	if err := applyClaimToPane(&pane, claim); err != nil {
+		return WorkspaceCreateResult{}, err
+	}
+
+	if err := s.tmux.NewSession(pane.LocalTmuxSession); err != nil {
+		return WorkspaceCreateResult{}, newError(rpc.ReasonTmuxUnavailable, err)
+	}
+
+	terminalRef, err := s.ghostty.SplitTerminal(anchorTerminalID, direction, s.launchCommandForPane(pane))
+	if err != nil {
+		_ = s.tmux.KillSession(pane.LocalTmuxSession)
+		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, err)
+	}
+
+	workspace.GhosttyWindowID = windowID
+	workspace.GhosttyTabID = tabID
+	workspace.PaneIDs = []string{pane.ID}
+	pane.GhosttyTerminalID = terminalRef.ID
+
+	s.state.Workspaces[workspace.ID] = workspace
+	s.state.Panes[pane.ID] = pane
+	if _, err := s.refreshPaneLocked(pane.ID); err != nil {
+		delete(s.state.Panes, pane.ID)
+		delete(s.state.Workspaces, workspace.ID)
+		_ = s.tmux.KillSession(pane.LocalTmuxSession)
+		return WorkspaceCreateResult{}, err
+	}
+	if err := s.saveLocked(); err != nil {
+		delete(s.state.Panes, pane.ID)
+		delete(s.state.Workspaces, workspace.ID)
+		_ = s.tmux.KillSession(pane.LocalTmuxSession)
+		return WorkspaceCreateResult{}, err
+	}
+
+	return WorkspaceCreateResult{Workspace: workspace, Pane: s.state.Panes[pane.ID]}, nil
 }
 
 func toSnapshot(pane model.Pane) model.PaneSnapshot {

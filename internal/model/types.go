@@ -163,6 +163,21 @@ type PaneSnapshot struct {
 	RemoteTmuxDetail string           `json:"remote_tmux_detail"`
 }
 
+type WorkspaceTerminalTarget struct {
+	WindowID           string `json:"window_id"`
+	WindowName         string `json:"window_name"`
+	TabID              string `json:"tab_id"`
+	TabName            string `json:"tab_name"`
+	TabIndex           int    `json:"tab_index"`
+	TabSelected        bool   `json:"tab_selected"`
+	TerminalID         string `json:"terminal_id"`
+	TerminalName       string `json:"terminal_name"`
+	WorkingDirectory   string `json:"working_directory"`
+	Managed            bool   `json:"managed"`
+	ManagedPaneID      string `json:"managed_pane_id,omitempty"`
+	ManagedWorkspaceID string `json:"managed_workspace_id,omitempty"`
+}
+
 type BrokerStatus struct {
 	StartedAt          time.Time   `json:"started_at"`
 	LastRequestAt      time.Time   `json:"last_request_at"`

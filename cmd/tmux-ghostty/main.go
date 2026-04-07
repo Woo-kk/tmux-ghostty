@@ -331,6 +331,13 @@ func runWorkspace(ctx context.Context, paths app.Paths, args []string) int {
 		}
 		printJSON(result)
 		return 0
+	case "list-windows":
+		var result []model.WorkspaceTerminalTarget
+		if err := client.Call(ctx, "workspace.list_windows", nil, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
 	case "bootstrap-current":
 		var result any
 		if err := client.Call(ctx, "workspace.bootstrap_current", nil, &result); err != nil {
@@ -354,6 +361,29 @@ func runWorkspace(ctx context.Context, paths app.Paths, args []string) int {
 		if err := client.Call(ctx, "workspace.split_current", map[string]any{
 			"direction": *direction,
 			"claim":     *claim,
+		}, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
+	case "split-terminal":
+		flags := flag.NewFlagSet("workspace split-terminal", flag.ContinueOnError)
+		flags.SetOutput(os.Stderr)
+		terminalID := flags.String("terminal-id", "", "ghostty terminal id")
+		direction := flags.String("direction", "", "split direction")
+		claim := flags.String("claim", "", "optional controller for the new pane")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 1
+		}
+		if strings.TrimSpace(*terminalID) == "" || strings.TrimSpace(*direction) == "" {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty workspace split-terminal --terminal-id <id> --direction up|down|left|right [--claim agent|user]")
+			return 1
+		}
+		var result any
+		if err := client.Call(ctx, "workspace.split_terminal", map[string]any{
+			"terminal_id": *terminalID,
+			"direction":   *direction,
+			"claim":       *claim,
 		}, &result); err != nil {
 			return printError(err)
 		}
