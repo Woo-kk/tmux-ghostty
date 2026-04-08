@@ -9,7 +9,8 @@
 - `tmux-ghostty` CLI plus auto-started `tmux-ghostty-broker`
 - Unix domain socket JSON-RPC 2.0
 - workspace / pane / action state persistence
-- Ghostty AppleScript orchestration for windows, tabs, splits, focus, text input, and key events
+- Ghostty AppleScript orchestration for windows, tabs, the initial seed-pane split, focus, text input, and key events
+- tmux-native pane splitting for additional panes inside an existing workspace
 - one logical pane = one local `tmux` session
 - pane snapshot capture from local `tmux`
 - explicit `claim` / `release` / `interrupt` / `observe`
@@ -118,7 +119,7 @@ tmux-ghostty help
 
 `tmux-ghostty help` is the authoritative detailed command reference. The README keeps the high-level command tree; use the CLI for the per-command descriptions. `tmux-ghostty -h` and `tmux-ghostty --help` are equivalent aliases.
 
-`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal is directly adoptable or first needs bootstrapping. If the terminal is already inside a local tmux pane, `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. If the terminal is a local idle shell outside tmux, `tmux-ghostty workspace bootstrap-current` starts a broker-owned tmux session in place and adopts it into a current-window workspace. In current-window mode, the CLI does not silently launch or rebuild a replacement Ghostty window; if the front window, focused terminal, or tmux context is unsuitable, it fails explicitly. `tmux-ghostty pane split` is the formal way to grow an existing workspace in-place.
+`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal is directly adoptable or first needs bootstrapping. If the terminal is already inside a local tmux pane, `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. If the terminal is a local idle shell outside tmux, `tmux-ghostty workspace bootstrap-current` starts a broker-owned tmux session in place and adopts it into a current-window workspace. In current-window mode, the CLI does not silently launch or rebuild a replacement Ghostty window; if the front window, focused terminal, or tmux context is unsuitable, it fails explicitly. After the workspace seed pane exists, `tmux-ghostty pane split` grows the layout with tmux native `split-window` inside the shared workspace session instead of asking Ghostty to create another terminal.
 
 `tmux-ghostty version` prints build metadata. `tmux-ghostty self-update` installs a GitHub Release package over the current installation. `tmux-ghostty uninstall` removes both installed binaries and the current user's runtime data.
 

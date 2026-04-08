@@ -9,7 +9,8 @@
 - `tmux-ghostty` CLI，以及自动拉起的 `tmux-ghostty-broker`
 - 基于 Unix domain socket 的 JSON-RPC 2.0
 - workspace / pane / action 状态持久化
-- 通过 Ghostty AppleScript 编排 window、tab、split、focus、文本输入和按键事件
+- 通过 Ghostty AppleScript 编排 window、tab、初始 seed pane 分屏、focus、文本输入和按键事件
+- 已有 workspace 内新增 pane 时，使用 tmux 原生分屏
 - 一个逻辑 pane 对应一个本地 `tmux` session
 - 从本地 `tmux` 抓取 pane 快照
 - 显式控制权切换：`claim` / `release` / `interrupt` / `observe`
@@ -117,7 +118,7 @@ tmux-ghostty help
 
 `tmux-ghostty help` 是权威的详细命令参考。README 只保留高层级命令树，具体命令说明请以 CLI 输出为准。`tmux-ghostty -h` 和 `tmux-ghostty --help` 是等价别名。
 
-`tmux-ghostty workspace inspect-current` 会报告当前焦点 Ghostty terminal 是否可被接管。`tmux-ghostty workspace adopt-current` 会在当前 Ghostty 窗口内继续工作，而不是新开窗口。当前窗口模式下，CLI 不会再隐式拉起替代用的 Ghostty window；如果前台窗口、焦点 terminal 或 tmux 上下文不满足要求，它会明确失败。`tmux-ghostty pane split` 是在已有 workspace 内正式扩 pane 的入口。
+`tmux-ghostty workspace inspect-current` 会报告当前焦点 Ghostty terminal 是否可被接管。`tmux-ghostty workspace adopt-current` 会在当前 Ghostty 窗口内继续工作，而不是新开窗口。当前窗口模式下，CLI 不会再隐式拉起替代用的 Ghostty window；如果前台窗口、焦点 terminal 或 tmux 上下文不满足要求，它会明确失败。在 workspace 的 seed pane 建好之后，`tmux-ghostty pane split` 会在共享 workspace session 内通过 tmux 原生 `split-window` 扩 pane，而不是再让 Ghostty 创建一个新的 terminal。
 
 `tmux-ghostty version` 会输出构建元信息。`tmux-ghostty self-update` 会用 GitHub Release 中的安装包覆盖当前安装。`tmux-ghostty uninstall` 会同时删除两个已安装二进制和当前用户的运行时数据。
 
