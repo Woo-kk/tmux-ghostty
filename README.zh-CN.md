@@ -90,6 +90,9 @@ tmux-ghostty status
 tmux-ghostty workspace create
 tmux-ghostty workspace inspect-current
 tmux-ghostty workspace bootstrap-current
+tmux-ghostty workspace list-windows
+tmux-ghostty workspace split-current --direction up|down|left|right [--claim agent|user]
+tmux-ghostty workspace split-terminal --terminal-id <id> --direction up|down|left|right [--claim agent|user]
 tmux-ghostty workspace adopt-current
 tmux-ghostty workspace reconcile
 tmux-ghostty workspace close <workspace-id>
@@ -103,6 +106,7 @@ tmux-ghostty pane delete <pane-id>
 tmux-ghostty pane snapshot <pane-id>
 tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]
 
+tmux-ghostty host connect <pane-id>
 tmux-ghostty host attach <pane-id> <query>
 
 tmux-ghostty claim <pane-id> --actor agent
@@ -122,9 +126,11 @@ tmux-ghostty help
 
 `tmux-ghostty help` 是权威的详细命令参考。README 只保留高层级命令树，具体命令说明请以 CLI 输出为准。`tmux-ghostty -h` 和 `tmux-ghostty --help` 是等价别名。
 
-`tmux-ghostty workspace inspect-current` 会报告当前焦点 Ghostty terminal 是否可被接管，还是需要先 bootstrap。若当前 terminal 只是本地空闲 shell 且尚未进入 tmux，可用 `tmux-ghostty workspace bootstrap-current` 原地拉起 broker 管理的 tmux session 并接管；若已经在本地 tmux pane 中，则用 `tmux-ghostty workspace adopt-current` 在当前 Ghostty 窗口内继续工作，而不是新开窗口。当前窗口模式下，CLI 不会再隐式拉起替代用的 Ghostty window；如果前台窗口、焦点 terminal 或 tmux 上下文不满足要求，它会明确失败。`tmux-ghostty pane split` 是在已有 workspace 内正式扩 pane 的入口。
+`tmux-ghostty workspace inspect-current` 会报告当前焦点 Ghostty terminal 是否可被接管，还是需要先 bootstrap。当前窗口内如果只是想快速新建 pane，应优先走最短路径：当前焦点是未受管的本地 shell 时，用 `tmux-ghostty workspace split-current --direction ... --claim user`；当前焦点已经是受管 pane 时，用 `tmux-ghostty pane split <pane-id> --direction ... --claim user`；如果要命中同一 Ghostty window 里一个已知但未聚焦的 terminal，则用 `tmux-ghostty workspace split-terminal --terminal-id ... --direction ... --claim user`。`tmux-ghostty workspace bootstrap-current` 只用于接管当前 shell 本身，不再是“只是想多一个 pane”时的默认路径。当前窗口模式下，CLI 不会再隐式拉起替代用的 Ghostty window；如果前台窗口、焦点 terminal 或 tmux 上下文不满足要求，它会明确失败。
 
 `tmux-ghostty pane clear` 和 `tmux-ghostty workspace clear` 会清理 tmux-ghostty 记录的 pane 屏幕快照，并清空对应 pane 或 workspace 的 tmux scrollback。`tmux-ghostty pane delete` 和 `tmux-ghostty workspace delete` 会永久删除对应 pane 或 workspace 的 broker 状态，并终止其归 broker 所有的本地 tmux session。
+
+`tmux-ghostty host connect <pane-id>` 会在 JumpServer provider 到达 `menu`、`target_search` 或 `auth_prompt` 后立即返回；`tmux-ghostty host attach <pane-id> <query>` 保持现有语义：仍然要求非空 query，并且只有到达远端 shell 后才算成功。
 
 `tmux-ghostty version` 会输出构建元信息。`tmux-ghostty self-update` 会用 GitHub Release 中的安装包覆盖当前安装。`tmux-ghostty uninstall` 会同时删除两个已安装二进制和当前用户的运行时数据。
 
@@ -270,7 +276,7 @@ git push origin v0.1.0
 ## 说明
 
 - Ghostty 只被当作可见前端使用。真正的文本/数据传递由 `tmux` 负责，所以快照文本来自本地 `tmux`，而不是 Ghostty 的内容 API。
-- `host attach` 现在通过 `internal/remote` 挂接 provider，后续可以扩到 SSH 直连或其他跳板机类型，而不用重写 broker/workspace 核心。
+- `host connect` 和 `host attach` 现在都通过 `internal/remote` 挂接 provider，后续可以扩到 SSH 直连或其他跳板机类型，而不用重写 broker/workspace 核心。
 - 当前内置的 `jumpserver` provider 会自动把仓库内置的 runner 和 expect helper 落到 tmux-ghostty 运行时目录；如果需要，仍然可以通过 `TMUX_GHOSTTY_JUMP_RUNNER` 覆盖默认值。
-- `host attach` 现在以远端 shell 就绪为成功条件；远端 tmux 只是 best-effort，其结果会通过 `remote_tmux_status` 和 `remote_tmux_detail` 暴露出来。
+- `host connect` 现在以 provider 到达 `menu`、`target_search` 或 `auth_prompt` 为成功条件；`host attach` 仍然以远端 shell 就绪为成功条件。远端 tmux 只是 best-effort，其结果会通过 `remote_tmux_status` 和 `remote_tmux_detail` 暴露出来。
 - 当前测试套件使用真实本地 `tmux` 加 fake Ghostty 编排，因此自动化测试时不会真的弹出 GUI 窗口。

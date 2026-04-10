@@ -82,6 +82,7 @@ func TestHelpTextIncludesCommandGroupsAndKeyCommands(t *testing.T) {
 		"tmux-ghostty pane clear <pane-id>",
 		"tmux-ghostty pane delete <pane-id>",
 		"tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]",
+		"tmux-ghostty host connect <pane-id>",
 		"tmux-ghostty command send <pane-id> <command...>",
 		"Notes:",
 	} {

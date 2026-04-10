@@ -60,8 +60,10 @@ type fakeGhosttyFocusResult struct {
 }
 
 type fakeRemoteClient struct {
-	attachResult remote.ResolvedTarget
-	attachErr    error
+	connectResult remote.ProviderConnection
+	connectErr    error
+	attachResult  remote.ResolvedTarget
+	attachErr     error
 }
 
 func newFakeGhosttyClient() *fakeGhosttyClient {
@@ -231,6 +233,29 @@ func (f *fakeGhosttyClient) ListTerminals(tabID string) ([]ghostty.TerminalRef, 
 
 func (f fakeRemoteClient) SearchTarget(query string) ([]remote.TargetMatch, error) {
 	return []remote.TargetMatch{{DisplayName: query}}, nil
+}
+
+func (f fakeRemoteClient) ConnectTarget(localTarget string) (remote.ProviderConnection, error) {
+	if f.connectErr != nil {
+		return remote.ProviderConnection{}, f.connectErr
+	}
+	result := f.connectResult
+	if strings.TrimSpace(result.Provider) == "" {
+		result.Provider = remote.ProviderJumpServer
+	}
+	if result.Stage == "" {
+		result.Stage = model.StageMenu
+	}
+	if len(result.StageTrace) == 0 {
+		result.StageTrace = []model.PaneStage{result.Stage}
+	}
+	if !result.ReadyForUserInput {
+		switch result.Stage {
+		case model.StageMenu, model.StageTargetSearch, model.StageAuthPrompt:
+			result.ReadyForUserInput = true
+		}
+	}
+	return result, nil
 }
 
 func (f fakeRemoteClient) AttachTarget(localTarget string, query string) (remote.ResolvedTarget, error) {
@@ -539,6 +564,72 @@ func TestAttachHostPersistsRemoteTmuxMetadata(t *testing.T) {
 	}
 	if snapshot.RemoteTmuxDetail != "tmux not found" {
 		t.Fatalf("unexpected snapshot remote tmux detail: %q", snapshot.RemoteTmuxDetail)
+	}
+}
+
+func TestConnectHostReturnsProviderReadyState(t *testing.T) {
+	service := newTestServiceWithRemote(t, fakeRemoteClient{
+		connectResult: remote.ProviderConnection{
+			Provider:          remote.ProviderJumpServer,
+			Stage:             model.StageAuthPrompt,
+			StageTrace:        []model.PaneStage{model.StageAuthPrompt},
+			ReadyForUserInput: true,
+		},
+	})
+	created, err := service.CreateWorkspace()
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(created.Workspace.ID)
+	})
+
+	pane := service.state.Panes[created.Pane.ID]
+	pane.HostQuery = "2801"
+	pane.HostResolvedName = "k8s-master-2801"
+	pane.RemoteTmuxSession = "tmux-ghostty"
+	pane.RemoteTmuxStatus = model.RemoteTmuxStatusAttached
+	pane.RemoteTmuxDetail = "stale"
+	service.state.Panes[pane.ID] = pane
+
+	result, err := service.ConnectHost(created.Pane.ID)
+	if err != nil {
+		t.Fatalf("connect host: %v", err)
+	}
+	if result.Provider != remote.ProviderJumpServer {
+		t.Fatalf("unexpected provider: %q", result.Provider)
+	}
+	if result.Stage != model.StageAuthPrompt {
+		t.Fatalf("unexpected provider ready stage: %q", result.Stage)
+	}
+	if !result.ReadyForUserInput {
+		t.Fatalf("expected provider connection to be ready for user input")
+	}
+	if len(result.StageTrace) != 1 || result.StageTrace[0] != model.StageAuthPrompt {
+		t.Fatalf("unexpected stage trace: %+v", result.StageTrace)
+	}
+	if result.Pane.RemoteProvider != remote.ProviderJumpServer {
+		t.Fatalf("expected pane remote provider to be set, got %q", result.Pane.RemoteProvider)
+	}
+	if result.Pane.HostQuery != "" || result.Pane.HostResolvedName != "" {
+		t.Fatalf("expected host-specific resolution to be cleared, got %+v", result.Pane)
+	}
+	if result.Pane.RemoteTmuxSession != "" || result.Pane.RemoteTmuxStatus != "" || result.Pane.RemoteTmuxDetail != "" {
+		t.Fatalf("expected remote tmux metadata to be cleared, got %+v", result.Pane)
+	}
+	if result.Pane.Stage != model.StageAuthPrompt {
+		t.Fatalf("expected pane stage to reflect provider-ready stage, got %q", result.Pane.Stage)
+	}
+	if result.Pane.Mode != model.ModeRunning {
+		t.Fatalf("expected pane mode running while provider menu is active, got %q", result.Pane.Mode)
+	}
+
+	savedPane := service.state.Panes[created.Pane.ID]
+	if savedPane.Stage != model.StageAuthPrompt {
+		t.Fatalf("expected saved pane stage auth_prompt, got %q", savedPane.Stage)
+	}
+	if savedPane.HostQuery != "" || savedPane.HostResolvedName != "" {
+		t.Fatalf("expected saved pane host resolution to be cleared, got %+v", savedPane)
 	}
 }
 

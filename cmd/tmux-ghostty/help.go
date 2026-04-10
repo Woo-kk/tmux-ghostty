@@ -60,7 +60,8 @@ var commandHelpGroups = []commandHelpGroup{
 	{
 		Name: "Host",
 		Commands: []commandHelp{
-			{Usage: "tmux-ghostty host attach <pane-id> <query>", Summary: "Attach the pane to a remote target through the configured remote provider. The current built-in provider is JumpServer."},
+			{Usage: "tmux-ghostty host connect <pane-id>", Summary: "Connect the pane to the configured remote provider and return once the provider menu/search/auth state is ready for user input. The current built-in provider is JumpServer."},
+			{Usage: "tmux-ghostty host attach <pane-id> <query>", Summary: "Attach the pane to a specific remote target through the configured remote provider and wait until the remote shell is ready."},
 		},
 	},
 	{
@@ -92,9 +93,11 @@ var commandHelpGroups = []commandHelpGroup{
 var helpNotes = []string{
 	"Most workspace, pane, host, control, and command subcommands auto-start the local broker.",
 	`Use "tmux-ghostty workspace inspect-current" first when you want to stay in the current Ghostty window.`,
-	`If inspect-current reports a local shell outside tmux, run "tmux-ghostty workspace bootstrap-current". If the focused terminal is unsuitable but you still want to stay in that focused window, run "tmux-ghostty workspace split-current --direction ...". If you need another existing Ghostty terminal that is not focused, run "tmux-ghostty workspace list-windows" and then "tmux-ghostty workspace split-terminal --terminal-id ... --direction ...". If it reports an existing tmux pane, use "workspace adopt-current".`,
+	`For current-window pane creation, use "workspace split-current --direction ... --claim user" when the focused terminal is an unmanaged local shell, "pane split <pane-id> --direction ... --claim user" when the focused terminal is already managed, and "workspace split-terminal --terminal-id ... --direction ... --claim user" when you need a specific unfocused Ghostty terminal.`,
+	`"workspace bootstrap-current" is for taking over the current shell itself. It is not the default path when you only need a new pane in the current window.`,
 	`Current-window commands fail explicitly when the focused Ghostty terminal cannot be adopted. They do not auto-open a replacement window.`,
 	`"workspace split-current" only targets the currently focused Ghostty terminal. Use "workspace split-terminal" when you already know the target terminal ID from "workspace list-windows".`,
+	`Use "host connect" when you only need the JumpServer menu/search prompt. Use "host attach" when you want tmux-ghostty to keep driving the flow until a remote shell is ready.`,
 	`Use "tmux-ghostty pane list" to discover pane IDs before focus, snapshot, host, or control operations.`,
 	`"workspace close" keeps a closed workspace record. Use "workspace delete" or "pane delete" when you want permanent removal from broker state.`,
 	"Most query-style commands print JSON.",

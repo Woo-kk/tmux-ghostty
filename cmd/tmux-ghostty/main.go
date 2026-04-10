@@ -532,7 +532,7 @@ func runPane(ctx context.Context, paths app.Paths, args []string) int {
 }
 
 func runHost(ctx context.Context, paths app.Paths, args []string) int {
-	if len(args) < 1 || args[0] != "attach" || len(args) < 3 {
+	if len(args) < 1 {
 		usage()
 		return 1
 	}
@@ -540,13 +540,38 @@ func runHost(ctx context.Context, paths app.Paths, args []string) int {
 	if err != nil {
 		return printError(err)
 	}
-	query := strings.Join(args[2:], " ")
-	var result any
-	if err := client.Call(ctx, "host.attach", map[string]any{"pane_id": args[1], "query": query}, &result); err != nil {
-		return printError(err)
+	switch args[0] {
+	case "connect":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty host connect <pane-id>")
+			return 1
+		}
+		var result any
+		if err := client.Call(ctx, "host.connect", map[string]any{"pane_id": args[1]}, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
+	case "attach":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty host attach <pane-id> <query...>")
+			return 1
+		}
+		query := strings.TrimSpace(strings.Join(args[2:], " "))
+		if query == "" {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty host attach <pane-id> <query...>")
+			return 1
+		}
+		var result any
+		if err := client.Call(ctx, "host.attach", map[string]any{"pane_id": args[1], "query": query}, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
+	default:
+		usage()
+		return 1
 	}
-	printJSON(result)
-	return 0
 }
 
 func runClaim(ctx context.Context, paths app.Paths, args []string) int {

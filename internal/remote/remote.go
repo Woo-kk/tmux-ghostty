@@ -27,6 +27,15 @@ const (
 	AttachReasonStageTimeout        = "stage_timeout"
 	AttachReasonUnknownStage        = "unknown_stage"
 
+	providerConnectEntryTimeout        = 12 * time.Second
+	providerAttachEntryTimeout         = 45 * time.Second
+	providerQueryResolutionTimeout     = 25 * time.Second
+	providerSelectionTimeout           = 30 * time.Second
+	providerHostListTimeout            = 15 * time.Second
+	providerStagePollInterval          = 150 * time.Millisecond
+	providerStageStableObservations    = 2
+	providerNoResultStableObservations = 2
+
 	remoteTmuxMarkerPrefix     = "__TMUX_GHOSTTY_REMOTE_TMUX__"
 	remoteTmuxProbeDelay       = time.Second
 	remoteTmuxOutcomeSettleFor = 1500 * time.Millisecond
@@ -66,6 +75,13 @@ type ResolvedTarget struct {
 	Provider         string                 `json:"provider"`
 	ResolvedVia      string                 `json:"resolved_via"`
 	StageTrace       []model.PaneStage      `json:"stage_trace"`
+}
+
+type ProviderConnection struct {
+	Provider          string            `json:"provider"`
+	Stage             model.PaneStage   `json:"stage"`
+	StageTrace        []model.PaneStage `json:"stage_trace"`
+	ReadyForUserInput bool              `json:"ready_for_user_input"`
 }
 
 type remoteTmuxOutcome struct {
@@ -117,6 +133,7 @@ type Client struct {
 
 type provider interface {
 	searchTarget(query string) ([]TargetMatch, error)
+	connectTarget(localTarget string) (ProviderConnection, error)
 	attachTarget(localTarget string, query string) (ResolvedTarget, error)
 	ensureRemoteSession(localTarget string, remoteSession string) error
 	reconnect(localTarget string) error
@@ -162,6 +179,10 @@ func (p *unsupportedProvider) searchTarget(query string) ([]TargetMatch, error) 
 	return nil, fmt.Errorf("remote provider %q is not supported", p.name)
 }
 
+func (p *unsupportedProvider) connectTarget(localTarget string) (ProviderConnection, error) {
+	return ProviderConnection{}, fmt.Errorf("remote provider %q is not supported", p.name)
+}
+
 func (p *unsupportedProvider) attachTarget(localTarget string, query string) (ResolvedTarget, error) {
 	return ResolvedTarget{}, fmt.Errorf("remote provider %q is not supported", p.name)
 }
@@ -180,6 +201,10 @@ func (p *unsupportedProvider) detectStage(text string) model.PaneStage {
 
 func (c *Client) SearchTarget(query string) ([]TargetMatch, error) {
 	return c.provider.searchTarget(query)
+}
+
+func (c *Client) ConnectTarget(localTarget string) (ProviderConnection, error) {
+	return c.provider.connectTarget(localTarget)
 }
 
 func (c *Client) AttachTarget(localTarget string, query string) (ResolvedTarget, error) {
@@ -208,6 +233,29 @@ func (p *jumpServerProvider) searchTarget(query string) ([]TargetMatch, error) {
 	return []TargetMatch{{DisplayName: query}}, nil
 }
 
+func (p *jumpServerProvider) connectTarget(localTarget string) (ProviderConnection, error) {
+	if err := p.validate(); err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := p.startProvider(localTarget); err != nil {
+		return ProviderConnection{}, err
+	}
+
+	trace := []model.PaneStage{}
+	_, stage, err := p.waitForStage(localTarget, providerConnectEntryTimeout, model.StageMenu, model.StageTargetSearch, model.StageAuthPrompt)
+	if err != nil {
+		return ProviderConnection{}, wrapStageWaitError(stage, trace, err)
+	}
+	trace = appendTrace(trace, stage)
+
+	return ProviderConnection{
+		Provider:          ProviderJumpServer,
+		Stage:             stage,
+		StageTrace:        trace,
+		ReadyForUserInput: isReadyForUserInputStage(stage),
+	}, nil
+}
+
 func (p *jumpServerProvider) attachTarget(localTarget string, query string) (ResolvedTarget, error) {
 	if err := p.validate(); err != nil {
 		return ResolvedTarget{}, err
@@ -217,18 +265,12 @@ func (p *jumpServerProvider) attachTarget(localTarget string, query string) (Res
 	if query == "" {
 		return ResolvedTarget{}, fmt.Errorf("empty target query")
 	}
-
-	if err := p.tmux.SendCtrlC(localTarget); err != nil {
-		// Ignore pre-attach interrupt failures on a fresh shell.
-	}
-
-	command := execx.ShellQuote(p.runnerScript) + " " + execx.ShellQuote(p.profilePath) + " 1"
-	if err := p.tmux.SendKeys(localTarget, command); err != nil {
-		return ResolvedTarget{}, fmt.Errorf("start jump profile: %w", err)
+	if err := p.startProvider(localTarget); err != nil {
+		return ResolvedTarget{}, err
 	}
 
 	trace := []model.PaneStage{}
-	snapshot, stage, err := p.waitForStage(localTarget, 45*time.Second, model.StageMenu, model.StageTargetSearch, model.StageSelection, model.StageRemoteShell, model.StageAuthPrompt)
+	snapshot, stage, err := p.waitForStage(localTarget, providerAttachEntryTimeout, model.StageMenu, model.StageTargetSearch, model.StageSelection, model.StageRemoteShell, model.StageAuthPrompt)
 	if err != nil {
 		return ResolvedTarget{}, wrapStageWaitError(stage, trace, err)
 	}
@@ -252,7 +294,7 @@ func (p *jumpServerProvider) attachTarget(localTarget string, query string) (Res
 		if err := p.tmux.SendKeys(localTarget, query); err != nil {
 			return ResolvedTarget{}, fmt.Errorf("search target: %w", err)
 		}
-		snapshot, stage, err = p.waitForQueryResolution(localTarget, 25*time.Second)
+		snapshot, stage, err = p.waitForQueryResolution(localTarget, providerQueryResolutionTimeout)
 		if err != nil {
 			return ResolvedTarget{}, wrapStageWaitError(stage, trace, err)
 		}
@@ -286,7 +328,7 @@ func (p *jumpServerProvider) attachTarget(localTarget string, query string) (Res
 		if err := p.tmux.SendKeys(localTarget, selectionID); err != nil {
 			return ResolvedTarget{}, fmt.Errorf("select account: %w", err)
 		}
-		snapshot, stage, err = p.waitForStage(localTarget, 30*time.Second, model.StageRemoteShell, model.StageAuthPrompt)
+		snapshot, stage, err = p.waitForStage(localTarget, providerSelectionTimeout, model.StageRemoteShell, model.StageAuthPrompt)
 		if err != nil {
 			return ResolvedTarget{}, wrapStageWaitError(stage, trace, err)
 		}
@@ -316,6 +358,17 @@ func (p *jumpServerProvider) attachTarget(localTarget string, query string) (Res
 		ResolvedVia:      resolvedVia,
 		StageTrace:       trace,
 	}, nil
+}
+
+func (p *jumpServerProvider) startProvider(localTarget string) error {
+	if err := p.tmux.SendCtrlC(localTarget); err != nil {
+		// Ignore pre-attach interrupt failures on a fresh shell.
+	}
+	command := execx.ShellQuote(p.runnerScript) + " " + execx.ShellQuote(p.profilePath) + " 1"
+	if err := p.tmux.SendKeys(localTarget, command); err != nil {
+		return fmt.Errorf("start jump profile: %w", err)
+	}
+	return nil
 }
 
 func (p *jumpServerProvider) ensureRemoteSession(localTarget string, remoteSession string) error {
@@ -427,13 +480,13 @@ func (p *jumpServerProvider) waitForStage(localTarget string, timeout time.Durat
 		}
 		for _, candidate := range expected {
 			if stage == candidate {
-				if isTransientStage(stage) && stableCount < 2 {
+				if requiresStableConfirmation(stage) && stableCount < providerStageStableObservations {
 					break
 				}
 				return text, stage, nil
 			}
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(providerStagePollInterval)
 	}
 	return lastText, lastStage, fmt.Errorf("timed out waiting for remote provider stage %v; last stage %s", expected, lastStage)
 }
@@ -442,6 +495,7 @@ func (p *jumpServerProvider) waitForQueryResolution(localTarget string, timeout 
 	deadline := time.Now().Add(timeout)
 	lastText := ""
 	lastStage := model.StageUnknown
+	stableCount := 0
 	for time.Now().Before(deadline) {
 		text, err := p.tmux.CapturePane(localTarget, 220)
 		if err != nil {
@@ -449,16 +503,24 @@ func (p *jumpServerProvider) waitForQueryResolution(localTarget string, timeout 
 		}
 		stage := DetectStage(text)
 		lastText = text
-		lastStage = stage
+		if stage == lastStage {
+			stableCount++
+		} else {
+			lastStage = stage
+			stableCount = 1
+		}
 		switch stage {
 		case model.StageSelection, model.StageRemoteShell, model.StageAuthPrompt:
+			if requiresStableConfirmation(stage) && stableCount < providerStageStableObservations {
+				break
+			}
 			return text, stage, nil
 		case model.StageTargetSearch, model.StageMenu:
-			if containsNoAssets(text) {
+			if containsNoAssets(text) && stableCount >= providerNoResultStableObservations {
 				return text, stage, nil
 			}
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(providerStagePollInterval)
 	}
 	return lastText, lastStage, fmt.Errorf("timed out waiting for remote provider query resolution; last stage %s", lastStage)
 }
@@ -470,7 +532,7 @@ func (p *jumpServerProvider) enterHostList(localTarget string, currentStage mode
 	if err := p.tmux.SendText(localTarget, "h"); err != nil {
 		return "", model.StageUnknown, fmt.Errorf("enter host list: %w", err)
 	}
-	snapshot, stage, err := p.waitForHostList(localTarget, 15*time.Second)
+	snapshot, stage, err := p.waitForHostList(localTarget, providerHostListTimeout)
 	if err != nil {
 		return "", stage, wrapStageWaitError(stage, trace, err)
 	}
@@ -484,6 +546,7 @@ func (p *jumpServerProvider) waitForHostList(localTarget string, timeout time.Du
 	deadline := time.Now().Add(timeout)
 	lastText := ""
 	lastStage := model.StageUnknown
+	stableCount := 0
 	confirmed := false
 	for time.Now().Before(deadline) {
 		text, err := p.tmux.CapturePane(localTarget, 220)
@@ -492,9 +555,17 @@ func (p *jumpServerProvider) waitForHostList(localTarget string, timeout time.Du
 		}
 		stage := DetectStage(text)
 		lastText = text
-		lastStage = stage
+		if stage == lastStage {
+			stableCount++
+		} else {
+			lastStage = stage
+			stableCount = 1
+		}
 		switch stage {
 		case model.StageTargetSearch, model.StageAuthPrompt:
+			if requiresStableConfirmation(stage) && stableCount < providerStageStableObservations {
+				break
+			}
 			return text, stage, nil
 		}
 		if !confirmed && stage == model.StageMenu && needsHostListConfirmation(text) {
@@ -503,7 +574,7 @@ func (p *jumpServerProvider) waitForHostList(localTarget string, timeout time.Du
 			}
 			confirmed = true
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(providerStagePollInterval)
 	}
 	return lastText, lastStage, fmt.Errorf("timed out waiting for host list; last stage %s", lastStage)
 }
@@ -578,9 +649,18 @@ func appendTrace(trace []model.PaneStage, stage model.PaneStage) []model.PaneSta
 	return trace
 }
 
-func isTransientStage(stage model.PaneStage) bool {
+func requiresStableConfirmation(stage model.PaneStage) bool {
 	switch stage {
 	case model.StageMenu, model.StageConnecting, model.StageAuthPrompt:
+		return true
+	default:
+		return false
+	}
+}
+
+func isReadyForUserInputStage(stage model.PaneStage) bool {
+	switch stage {
+	case model.StageMenu, model.StageTargetSearch, model.StageAuthPrompt:
 		return true
 	default:
 		return false

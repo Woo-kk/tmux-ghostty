@@ -75,6 +75,81 @@ func TestDetectStageUsesRecentPromptInsteadOfHistoricalPassword(t *testing.T) {
 	}
 }
 
+func TestConnectTargetReturnsMenuReadyState(t *testing.T) {
+	controller := &fakeTmuxController{
+		snapshots: []string{
+			"Opt>",
+			"Opt>",
+		},
+	}
+	client := newTestRemoteClient(t, controller)
+
+	result, err := client.ConnectTarget("%1")
+	if err != nil {
+		t.Fatalf("ConnectTarget() error = %v", err)
+	}
+	if result.Provider != ProviderJumpServer {
+		t.Fatalf("unexpected provider: %q", result.Provider)
+	}
+	if result.Stage != model.StageMenu {
+		t.Fatalf("unexpected ready stage: %q", result.Stage)
+	}
+	if !result.ReadyForUserInput {
+		t.Fatal("expected ready_for_user_input=true")
+	}
+	if len(result.StageTrace) != 1 || result.StageTrace[0] != model.StageMenu {
+		t.Fatalf("unexpected stage trace: %+v", result.StageTrace)
+	}
+}
+
+func TestConnectTargetReturnsSearchReadyStateAfterTransientAuthPrompt(t *testing.T) {
+	controller := &fakeTmuxController{
+		snapshots: []string{
+			"password:",
+			"[Host]>",
+		},
+	}
+	client := newTestRemoteClient(t, controller)
+
+	result, err := client.ConnectTarget("%1")
+	if err != nil {
+		t.Fatalf("ConnectTarget() error = %v", err)
+	}
+	if result.Stage != model.StageTargetSearch {
+		t.Fatalf("unexpected ready stage: %q", result.Stage)
+	}
+	if len(result.StageTrace) != 1 || result.StageTrace[0] != model.StageTargetSearch {
+		t.Fatalf("unexpected stage trace: %+v", result.StageTrace)
+	}
+	if !result.ReadyForUserInput {
+		t.Fatal("expected ready_for_user_input=true")
+	}
+}
+
+func TestConnectTargetReturnsAuthPromptReadyState(t *testing.T) {
+	controller := &fakeTmuxController{
+		snapshots: []string{
+			"password:",
+			"password:",
+		},
+	}
+	client := newTestRemoteClient(t, controller)
+
+	result, err := client.ConnectTarget("%1")
+	if err != nil {
+		t.Fatalf("ConnectTarget() error = %v", err)
+	}
+	if result.Stage != model.StageAuthPrompt {
+		t.Fatalf("unexpected ready stage: %q", result.Stage)
+	}
+	if !result.ReadyForUserInput {
+		t.Fatal("expected ready_for_user_input=true")
+	}
+	if len(result.StageTrace) != 1 || result.StageTrace[0] != model.StageAuthPrompt {
+		t.Fatalf("unexpected stage trace: %+v", result.StageTrace)
+	}
+}
+
 func TestAttachTargetEntersHostListBeforeSearchingFromMenu(t *testing.T) {
 	controller := &fakeTmuxController{
 		snapshots: []string{
@@ -158,6 +233,17 @@ func TestAttachTargetIgnoresTransientAuthPrompt(t *testing.T) {
 	}
 	if resolved.ResolvedVia != ResolvedViaDirectQuery {
 		t.Fatalf("expected direct query resolution, got %q", resolved.ResolvedVia)
+	}
+}
+
+func TestAttachTargetRejectsEmptyQuery(t *testing.T) {
+	controller := &fakeTmuxController{}
+	client := newTestRemoteClient(t, controller)
+
+	if _, err := client.AttachTarget("%1", "   "); err == nil {
+		t.Fatalf("expected empty query error")
+	} else if !strings.Contains(err.Error(), "empty target query") {
+		t.Fatalf("unexpected empty query error: %v", err)
 	}
 }
 
@@ -277,6 +363,28 @@ func TestAttachTargetMarksRemoteTmuxFailureWithoutFailingAttach(t *testing.T) {
 	}
 	if !strings.Contains(resolved.RemoteTmuxDetail, "attach-session exit=1") {
 		t.Fatalf("unexpected remote tmux detail: %q", resolved.RemoteTmuxDetail)
+	}
+}
+
+func TestWaitForStageIgnoresTransientMenuBeforeSearch(t *testing.T) {
+	controller := &fakeTmuxController{
+		snapshots: []string{
+			"Opt>",
+			"[Host]>",
+		},
+	}
+	client := newTestRemoteClient(t, controller)
+	provider, ok := client.provider.(*jumpServerProvider)
+	if !ok {
+		t.Fatalf("expected jumpServerProvider, got %T", client.provider)
+	}
+
+	_, stage, err := provider.waitForStage("%1", time.Second, model.StageMenu, model.StageTargetSearch)
+	if err != nil {
+		t.Fatalf("waitForStage() error = %v", err)
+	}
+	if stage != model.StageTargetSearch {
+		t.Fatalf("waitForStage() stage = %q, want %q", stage, model.StageTargetSearch)
 	}
 }
 

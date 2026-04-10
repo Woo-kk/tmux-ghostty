@@ -53,6 +53,7 @@ type TmuxClient interface {
 
 type RemoteClient interface {
 	SearchTarget(query string) ([]remote.TargetMatch, error)
+	ConnectTarget(localTarget string) (remote.ProviderConnection, error)
 	AttachTarget(localTarget string, query string) (remote.ResolvedTarget, error)
 	EnsureRemoteSession(localTarget string, remoteSession string) error
 	Reconnect(localTarget string) error
@@ -91,6 +92,14 @@ type PreviewResult struct {
 type AttachResult struct {
 	Pane   model.Pane            `json:"pane"`
 	Target remote.ResolvedTarget `json:"target"`
+}
+
+type HostConnectResult struct {
+	Pane              model.Pane        `json:"pane"`
+	Provider          string            `json:"provider"`
+	Stage             model.PaneStage   `json:"stage"`
+	StageTrace        []model.PaneStage `json:"stage_trace"`
+	ReadyForUserInput bool              `json:"ready_for_user_input"`
 }
 
 type CurrentFocusInspection struct {
@@ -141,6 +150,10 @@ type paneSplitRequest struct {
 type hostAttachRequest struct {
 	PaneID string `json:"pane_id"`
 	Query  string `json:"query"`
+}
+
+type hostConnectRequest struct {
+	PaneID string `json:"pane_id"`
 }
 
 type claimRequest struct {
@@ -299,6 +312,11 @@ func (s *Service) HandleRPC(ctx context.Context, method string, params json.RawM
 		var req hostAttachRequest
 		if err = decodeParams(params, &req); err == nil {
 			result, err = s.AttachHost(req.PaneID, req.Query)
+		}
+	case "host.connect":
+		var req hostConnectRequest
+		if err = decodeParams(params, &req); err == nil {
+			result, err = s.ConnectHost(req.PaneID)
 		}
 	case "control.claim":
 		var req claimRequest
@@ -815,6 +833,51 @@ func (s *Service) AttachHost(paneID string, query string) (AttachResult, error) 
 		return AttachResult{}, err
 	}
 	return AttachResult{Pane: pane, Target: resolved}, nil
+}
+
+func (s *Service) ConnectHost(paneID string) (HostConnectResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touchLocked()
+
+	pane, err := s.paneLocked(paneID)
+	if err != nil {
+		return HostConnectResult{}, err
+	}
+	connection, err := s.remote.ConnectTarget(pane.LocalTmuxTarget)
+	if err != nil {
+		return HostConnectResult{}, newError(rpc.ReasonRemoteAttachFailed, err)
+	}
+
+	pane.RemoteProvider = connection.Provider
+	pane.HostQuery = ""
+	pane.HostResolvedName = ""
+	pane.RemoteTmuxSession = ""
+	pane.RemoteTmuxStatus = ""
+	pane.RemoteTmuxDetail = ""
+	pane.Mode = model.ModeRunning
+	pane.Stage = connection.Stage
+	s.state.Panes[pane.ID] = pane
+
+	pane, err = s.refreshPaneLocked(pane.ID)
+	if err != nil {
+		return HostConnectResult{}, err
+	}
+	if connection.Stage != model.StageUnknown {
+		pane.Stage = connection.Stage
+		pane.Mode = model.ModeRunning
+		s.state.Panes[pane.ID] = pane
+	}
+	if err := s.saveLocked(); err != nil {
+		return HostConnectResult{}, err
+	}
+	return HostConnectResult{
+		Pane:              pane,
+		Provider:          connection.Provider,
+		Stage:             connection.Stage,
+		StageTrace:        append([]model.PaneStage(nil), connection.StageTrace...),
+		ReadyForUserInput: connection.ReadyForUserInput,
+	}, nil
 }
 
 func (s *Service) Claim(paneID string, actor string) (model.Pane, error) {

@@ -89,7 +89,10 @@ tmux-ghostty status
 
 tmux-ghostty workspace create
 tmux-ghostty workspace inspect-current
+tmux-ghostty workspace list-windows
 tmux-ghostty workspace bootstrap-current
+tmux-ghostty workspace split-current --direction up|down|left|right [--claim agent|user]
+tmux-ghostty workspace split-terminal --terminal-id <id> --direction up|down|left|right [--claim agent|user]
 tmux-ghostty workspace adopt-current
 tmux-ghostty workspace reconcile
 tmux-ghostty workspace close <workspace-id>
@@ -103,6 +106,7 @@ tmux-ghostty pane delete <pane-id>
 tmux-ghostty pane snapshot <pane-id>
 tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]
 
+tmux-ghostty host connect <pane-id>
 tmux-ghostty host attach <pane-id> <query>
 
 tmux-ghostty claim <pane-id> --actor agent
@@ -122,9 +126,11 @@ tmux-ghostty help
 
 `tmux-ghostty help` is the authoritative detailed command reference. The README keeps the high-level command tree; use the CLI for the per-command descriptions. `tmux-ghostty -h` and `tmux-ghostty --help` are equivalent aliases.
 
-`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal is directly adoptable or first needs bootstrapping. If the terminal is already inside a local tmux pane, `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. If the terminal is a local idle shell outside tmux, `tmux-ghostty workspace bootstrap-current` starts a broker-owned tmux session in place and adopts it into a current-window workspace. In current-window mode, the CLI does not silently launch or rebuild a replacement Ghostty window; if the front window, focused terminal, or tmux context is unsuitable, it fails explicitly. `tmux-ghostty pane split` is the formal way to grow an existing workspace in-place.
+`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal is directly adoptable or first needs bootstrapping. For current-window pane creation, use `tmux-ghostty workspace split-current --direction ... --claim user` when the focused terminal is an unmanaged local shell, `tmux-ghostty pane split <pane-id> --direction ... --claim user` when the focused terminal is already managed, and `tmux-ghostty workspace split-terminal --terminal-id ... --direction ... --claim user` when you are targeting a known unfocused terminal in the same Ghostty window. `tmux-ghostty workspace bootstrap-current` is reserved for taking over the current shell itself; it is not the default path when you only need a new pane. In current-window mode, the CLI does not silently launch or rebuild a replacement Ghostty window; if the front window, focused terminal, or tmux context is unsuitable, it fails explicitly.
 
 `tmux-ghostty pane clear` and `tmux-ghostty workspace clear` clear the pane screen state that tmux-ghostty snapshots, and clear tmux scrollback for the affected pane or workspace. `tmux-ghostty pane delete` and `tmux-ghostty workspace delete` permanently remove broker state for the selected pane or workspace and terminate any broker-owned local tmux sessions that belong to it.
+
+`tmux-ghostty host connect <pane-id>` stops once the JumpServer provider is ready for user input at `menu`, `target_search`, or `auth_prompt`. `tmux-ghostty host attach <pane-id> <query>` keeps the existing behavior: it requires a non-empty query and only succeeds once a remote shell is ready.
 
 `tmux-ghostty version` prints build metadata. `tmux-ghostty self-update` installs a GitHub Release package over the current installation. `tmux-ghostty uninstall` removes both installed binaries and the current user's runtime data.
 
@@ -270,7 +276,7 @@ If `HOMEBREW_TAP_TOKEN` is configured, the same workflow also commits the genera
 ## Notes
 
 - Ghostty is treated as the visible frontend only. `tmux` carries the actual text/data flow, so snapshot text comes from local `tmux`, not from Ghostty content APIs.
-- `host attach` is wired through `internal/remote`, so additional remote providers such as direct SSH can be added without rewriting the broker/workspace core.
+- `host connect` and `host attach` are wired through `internal/remote`, so additional remote providers such as direct SSH can be added without rewriting the broker/workspace core.
 - The built-in `jumpserver` provider now materializes its bundled runner and expect helper under the tmux-ghostty runtime directory automatically; `TMUX_GHOSTTY_JUMP_RUNNER` still overrides that default when needed.
-- `host attach` succeeds once the remote shell is ready. Remote tmux attach is best-effort and surfaces its outcome through `remote_tmux_status` and `remote_tmux_detail`.
+- `host connect` succeeds once the provider reaches `menu`, `target_search`, or `auth_prompt`. `host attach` still succeeds only when the remote shell is ready. Remote tmux attach is best-effort and surfaces its outcome through `remote_tmux_status` and `remote_tmux_detail`.
 - The current test suite uses real local `tmux` and fake Ghostty orchestration so it does not spawn GUI windows during automated runs.
