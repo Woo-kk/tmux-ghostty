@@ -75,6 +75,88 @@ func TestDetectStageUsesRecentPromptInsteadOfHistoricalPassword(t *testing.T) {
 	}
 }
 
+func TestConnectTargetStopsAtMenu(t *testing.T) {
+	controller := &fakeTmuxController{
+		snapshots: []string{
+			"Opt>",
+			"Opt>",
+		},
+	}
+	client := newTestRemoteClient(t, controller)
+
+	connected, err := client.ConnectTarget("%1")
+	if err != nil {
+		t.Fatalf("ConnectTarget() error = %v", err)
+	}
+	if connected.Provider != ProviderJumpServer {
+		t.Fatalf("unexpected provider: %q", connected.Provider)
+	}
+	if connected.Stage != model.StageMenu {
+		t.Fatalf("ConnectTarget() stage = %q, want %q", connected.Stage, model.StageMenu)
+	}
+	if !connected.ReadyForUserInput {
+		t.Fatalf("expected connect result to be ready for user input")
+	}
+	wantTrace := []model.PaneStage{model.StageMenu}
+	if len(connected.StageTrace) != len(wantTrace) || connected.StageTrace[0] != wantTrace[0] {
+		t.Fatalf("unexpected stage trace: %#v", connected.StageTrace)
+	}
+	if len(controller.sendHistory) != 1 {
+		t.Fatalf("expected only profile start command, got %v", controller.sendHistory)
+	}
+}
+
+func TestConnectTargetStopsAtTargetSearch(t *testing.T) {
+	controller := &fakeTmuxController{
+		snapshots: []string{
+			"password:",
+			"[Host]>",
+			"[Host]>",
+		},
+	}
+	client := newTestRemoteClient(t, controller)
+
+	connected, err := client.ConnectTarget("%1")
+	if err != nil {
+		t.Fatalf("ConnectTarget() error = %v", err)
+	}
+	if connected.Stage != model.StageTargetSearch {
+		t.Fatalf("ConnectTarget() stage = %q, want %q", connected.Stage, model.StageTargetSearch)
+	}
+	if !connected.ReadyForUserInput {
+		t.Fatalf("expected connect result to be ready for user input")
+	}
+	wantTrace := []model.PaneStage{model.StageTargetSearch}
+	if len(connected.StageTrace) != len(wantTrace) || connected.StageTrace[0] != wantTrace[0] {
+		t.Fatalf("unexpected stage trace: %#v", connected.StageTrace)
+	}
+}
+
+func TestConnectTargetReturnsAuthPromptAsReadyForUserInput(t *testing.T) {
+	controller := &fakeTmuxController{
+		snapshots: []string{
+			"password:",
+			"password:",
+		},
+	}
+	client := newTestRemoteClient(t, controller)
+
+	connected, err := client.ConnectTarget("%1")
+	if err != nil {
+		t.Fatalf("ConnectTarget() error = %v", err)
+	}
+	if connected.Stage != model.StageAuthPrompt {
+		t.Fatalf("ConnectTarget() stage = %q, want %q", connected.Stage, model.StageAuthPrompt)
+	}
+	if !connected.ReadyForUserInput {
+		t.Fatalf("expected auth prompt to be returned as ready for user input")
+	}
+	wantTrace := []model.PaneStage{model.StageAuthPrompt}
+	if len(connected.StageTrace) != len(wantTrace) || connected.StageTrace[0] != wantTrace[0] {
+		t.Fatalf("unexpected stage trace: %#v", connected.StageTrace)
+	}
+}
+
 func TestAttachTargetEntersHostListBeforeSearchingFromMenu(t *testing.T) {
 	controller := &fakeTmuxController{
 		snapshots: []string{

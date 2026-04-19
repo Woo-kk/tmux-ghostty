@@ -33,13 +33,9 @@ var commandHelpGroups = []commandHelpGroup{
 	{
 		Name: "Workspace",
 		Commands: []commandHelp{
-			{Usage: "tmux-ghostty workspace create", Summary: "Create a workspace and its first pane."},
-			{Usage: "tmux-ghostty workspace inspect-current", Summary: "Inspect the currently focused Ghostty terminal without launching a new window and report whether it can be adopted into a workspace."},
-			{Usage: "tmux-ghostty workspace bootstrap-current", Summary: "If the current terminal is a local idle shell outside tmux, start a broker-owned tmux session in place and adopt it into a new current-window workspace."},
-			{Usage: "tmux-ghostty workspace split-current --direction up|down|left|right [--claim agent|user]", Summary: "Split the currently focused terminal in place and create the first broker-managed pane of a current-window workspace without opening a new window."},
-			{Usage: "tmux-ghostty workspace adopt-current", Summary: "Adopt the currently focused Ghostty terminal into a new workspace without opening a new window. Fail explicitly if the current focus is unsuitable."},
+			{Usage: "tmux-ghostty workspace create", Summary: "Create a workspace in a newly opened Ghostty window and return its first pane."},
 			{Usage: "tmux-ghostty workspace reconcile", Summary: "Rebuild workspace state from the current Ghostty/tmux view."},
-			{Usage: "tmux-ghostty workspace close <workspace-id>", Summary: "Close a workspace and all panes that belong to it."},
+			{Usage: "tmux-ghostty workspace close <workspace-id>", Summary: "Close a workspace, reclaim its tracked broker state, and kill any owned pane tmux sessions."},
 		},
 	},
 	{
@@ -48,12 +44,12 @@ var commandHelpGroups = []commandHelpGroup{
 			{Usage: "tmux-ghostty pane list", Summary: "List panes as JSON."},
 			{Usage: "tmux-ghostty pane focus <pane-id>", Summary: "Focus the pane in Ghostty."},
 			{Usage: "tmux-ghostty pane snapshot <pane-id>", Summary: "Capture pane text and metadata from tmux."},
-			{Usage: "tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]", Summary: "Split an existing pane inside the same workspace and return the new pane as JSON."},
 		},
 	},
 	{
 		Name: "Host",
 		Commands: []commandHelp{
+			{Usage: "tmux-ghostty host connect <pane-id>", Summary: "Open JumpServer in the pane and stop once it is ready for menu, search, or auth input."},
 			{Usage: "tmux-ghostty host attach <pane-id> <query>", Summary: "Attach the pane to a remote target through the configured remote provider. The current built-in provider is JumpServer."},
 		},
 	},
@@ -85,11 +81,11 @@ var commandHelpGroups = []commandHelpGroup{
 
 var helpNotes = []string{
 	"Most workspace, pane, host, control, and command subcommands auto-start the local broker.",
-	`Use "tmux-ghostty workspace inspect-current" first when you want to stay in the current Ghostty window.`,
-	`If inspect-current reports a local shell outside tmux, run "tmux-ghostty workspace bootstrap-current". If the current terminal is unsuitable but you still want to stay in the current window, run "tmux-ghostty workspace split-current --direction ...". If it reports an existing tmux pane, use "workspace adopt-current".`,
-	`Current-window commands fail explicitly when the focused Ghostty terminal cannot be adopted. They do not auto-open a replacement window.`,
+	`Managed workspaces are created with "tmux-ghostty workspace create", which always opens a new Ghostty window.`,
 	`Use "tmux-ghostty pane list" to discover pane IDs before focus, snapshot, host, or control operations.`,
+	`Use "tmux-ghostty host connect <pane-id>" to open JumpServer in a pane and stop once manual menu/search/auth input can continue.`,
 	"Most query-style commands print JSON.",
+	"Closed workspaces, stale broker monitor state, stale pane actions, and orphaned managed tg-pane-* tmux sessions are collected automatically by the broker.",
 	`Use "tmux-ghostty command preview" before "command send" when you are unsure whether a command is risky.`,
 	`Use "tmux-ghostty actions" to inspect pending approvals, then "approve" or "deny" the action ID.`,
 }

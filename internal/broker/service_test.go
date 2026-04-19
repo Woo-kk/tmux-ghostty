@@ -2,10 +2,10 @@ package broker
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +17,7 @@ import (
 	"github.com/Woo-kk/tmux-ghostty/internal/model"
 	"github.com/Woo-kk/tmux-ghostty/internal/remote"
 	"github.com/Woo-kk/tmux-ghostty/internal/rpc"
+	"github.com/Woo-kk/tmux-ghostty/internal/store"
 	"github.com/Woo-kk/tmux-ghostty/internal/tmux"
 )
 
@@ -25,43 +26,28 @@ type fakeGhosttyClient struct {
 	windowCounter   int
 	tabCounter      int
 	terminalCounter int
-	splitErr        error
 	requireErr      error
 	requireCalls    int
 	ensureErr       error
 	ensureCalls     int
 	newWindowCalls  int
-	inputTextHook   func(string, string) error
-	sendKeyHook     func(string, string, []string) error
-	inspectHook     func() (ghostty.FocusContext, error)
-	inputTexts      []fakeGhosttyInput
-	sendKeyCalls    []fakeGhosttyKey
-	inspectResults  []fakeGhosttyFocusResult
 	windows         map[string]ghostty.WindowRef
 	tabs            map[string][]ghostty.TabRef
 	terminals       map[string][]ghostty.TerminalRef
-	focus           ghostty.FocusContext
-}
-
-type fakeGhosttyInput struct {
-	terminalID string
-	text       string
-}
-
-type fakeGhosttyKey struct {
-	terminalID string
-	key        string
-	modifiers  []string
-}
-
-type fakeGhosttyFocusResult struct {
-	focus ghostty.FocusContext
-	err   error
 }
 
 type fakeRemoteClient struct {
-	attachResult remote.ResolvedTarget
-	attachErr    error
+	connectResult remote.ConnectedProvider
+	connectErr    error
+	attachResult  remote.ResolvedTarget
+	attachErr     error
+}
+
+type trackingTmuxClient struct {
+	base            *tmux.Client
+	mu              sync.Mutex
+	visibleSessions map[string]struct{}
+	killCalls       []string
 }
 
 func newFakeGhosttyClient() *fakeGhosttyClient {
@@ -70,6 +56,77 @@ func newFakeGhosttyClient() *fakeGhosttyClient {
 		tabs:      map[string][]ghostty.TabRef{},
 		terminals: map[string][]ghostty.TerminalRef{},
 	}
+}
+
+func newTrackingTmuxClient(base *tmux.Client) *trackingTmuxClient {
+	return &trackingTmuxClient{
+		base:            base,
+		visibleSessions: map[string]struct{}{},
+	}
+}
+
+func (c *trackingTmuxClient) HasSession(name string) (bool, error) {
+	c.mu.Lock()
+	_, tracked := c.visibleSessions[name]
+	c.mu.Unlock()
+	if !tracked {
+		return false, nil
+	}
+	return c.base.HasSession(name)
+}
+
+func (c *trackingTmuxClient) ListSessions() ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sessions := make([]string, 0, len(c.visibleSessions))
+	for session := range c.visibleSessions {
+		sessions = append(sessions, session)
+	}
+	sort.Strings(sessions)
+	return sessions, nil
+}
+
+func (c *trackingTmuxClient) NewSession(name string) error {
+	if err := c.base.NewSession(name); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.visibleSessions[name] = struct{}{}
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *trackingTmuxClient) KillSession(name string) error {
+	err := c.base.KillSession(name)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.killCalls = append(c.killCalls, name)
+	delete(c.visibleSessions, name)
+	return err
+}
+
+func (c *trackingTmuxClient) SendKeys(target string, text string) error {
+	return c.base.SendKeys(target, text)
+}
+
+func (c *trackingTmuxClient) SendCtrlC(target string) error {
+	return c.base.SendCtrlC(target)
+}
+
+func (c *trackingTmuxClient) CapturePane(target string, lines int) (string, error) {
+	return c.base.CapturePane(target, lines)
+}
+
+func (c *trackingTmuxClient) CurrentCommand(target string) (string, error) {
+	return c.base.CurrentCommand(target)
+}
+
+func (c *trackingTmuxClient) TargetAlive(target string) (bool, error) {
+	return c.base.TargetAlive(target)
+}
+
+func (c *trackingTmuxClient) AttachCommand(session string) string {
+	return c.base.AttachCommand(session)
 }
 
 func (f *fakeGhosttyClient) RequireAvailable() error {
@@ -93,51 +150,6 @@ func (f *fakeGhosttyClient) EnsureRunning() error {
 func (f *fakeGhosttyClient) FocusTerminal(string) error {
 	return nil
 }
-func (f *fakeGhosttyClient) InputText(terminalID string, text string) error {
-	f.mu.Lock()
-	f.inputTexts = append(f.inputTexts, fakeGhosttyInput{terminalID: terminalID, text: text})
-	hook := f.inputTextHook
-	f.mu.Unlock()
-	if hook != nil {
-		return hook(terminalID, text)
-	}
-	return nil
-}
-func (f *fakeGhosttyClient) SendKey(terminalID string, key string, modifiers []string) error {
-	f.mu.Lock()
-	f.sendKeyCalls = append(f.sendKeyCalls, fakeGhosttyKey{
-		terminalID: terminalID,
-		key:        key,
-		modifiers:  append([]string(nil), modifiers...),
-	})
-	hook := f.sendKeyHook
-	f.mu.Unlock()
-	if hook != nil {
-		return hook(terminalID, key, modifiers)
-	}
-	return nil
-}
-func (f *fakeGhosttyClient) InspectFocused() (ghostty.FocusContext, error) {
-	f.mu.Lock()
-	if len(f.inspectResults) > 0 {
-		result := f.inspectResults[0]
-		if len(f.inspectResults) > 1 {
-			f.inspectResults = f.inspectResults[1:]
-		}
-		f.mu.Unlock()
-		return result.focus, result.err
-	}
-	hook := f.inspectHook
-	focus := f.focus
-	f.mu.Unlock()
-	if hook != nil {
-		return hook()
-	}
-	if focus.Terminal.ID == "" {
-		return ghostty.FocusContext{}, errors.New("no focused terminal")
-	}
-	return focus, nil
-}
 
 func (f *fakeGhosttyClient) NewWindow(string) (ghostty.WindowRef, ghostty.TerminalRef, error) {
 	f.mu.Lock()
@@ -155,7 +167,6 @@ func (f *fakeGhosttyClient) NewWindow(string) (ghostty.WindowRef, ghostty.Termin
 	f.windows[windowID] = window
 	f.tabs[windowID] = []ghostty.TabRef{tab}
 	f.terminals[tabID] = []ghostty.TerminalRef{terminal}
-	f.focus = ghostty.FocusContext{Window: window, Tab: tab, Terminal: terminal}
 	return window, terminal, nil
 }
 
@@ -173,38 +184,7 @@ func (f *fakeGhosttyClient) NewTab(windowID string, _ string) (ghostty.TabRef, g
 	window := f.windows[windowID]
 	window.SelectedTabID = tabID
 	f.windows[windowID] = window
-	f.focus = ghostty.FocusContext{Window: window, Tab: tab, Terminal: terminal}
 	return tab, terminal, nil
-}
-
-func (f *fakeGhosttyClient) SplitTerminal(terminalID string, _ string, _ string) (ghostty.TerminalRef, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.splitErr != nil {
-		return ghostty.TerminalRef{}, f.splitErr
-	}
-	f.terminalCounter++
-	newTerminal := ghostty.TerminalRef{ID: "term-test-" + itoa(f.terminalCounter), Name: terminalID}
-	for tabID, terminals := range f.terminals {
-		for _, existing := range terminals {
-			if existing.ID == terminalID {
-				f.terminals[tabID] = append(f.terminals[tabID], newTerminal)
-				for windowID, tabs := range f.tabs {
-					for _, tab := range tabs {
-						if tab.ID == tabID {
-							window := f.windows[windowID]
-							updatedTab := tab
-							updatedTab.FocusedTerminalID = newTerminal.ID
-							f.focus = ghostty.FocusContext{Window: window, Tab: updatedTab, Terminal: newTerminal}
-							return newTerminal, nil
-						}
-					}
-				}
-				return newTerminal, nil
-			}
-		}
-	}
-	return newTerminal, nil
 }
 
 func (f *fakeGhosttyClient) ListWindows() ([]ghostty.WindowRef, error) {
@@ -231,6 +211,26 @@ func (f *fakeGhosttyClient) ListTerminals(tabID string) ([]ghostty.TerminalRef, 
 
 func (f fakeRemoteClient) SearchTarget(query string) ([]remote.TargetMatch, error) {
 	return []remote.TargetMatch{{DisplayName: query}}, nil
+}
+
+func (f fakeRemoteClient) ConnectTarget(localTarget string) (remote.ConnectedProvider, error) {
+	if f.connectErr != nil {
+		return remote.ConnectedProvider{}, f.connectErr
+	}
+	result := f.connectResult
+	if strings.TrimSpace(result.Provider) == "" {
+		result.Provider = remote.ProviderJumpServer
+	}
+	if result.Stage == "" {
+		result.Stage = model.StageMenu
+	}
+	if len(result.StageTrace) == 0 && result.Stage != "" {
+		result.StageTrace = []model.PaneStage{result.Stage}
+	}
+	if !result.ReadyForUserInput {
+		result.ReadyForUserInput = result.Stage == model.StageMenu || result.Stage == model.StageTargetSearch || result.Stage == model.StageAuthPrompt
+	}
+	return result, nil
 }
 
 func (f fakeRemoteClient) AttachTarget(localTarget string, query string) (remote.ResolvedTarget, error) {
@@ -354,60 +354,6 @@ func TestCommandFlowWithTmux(t *testing.T) {
 	}
 }
 
-func TestInspectAndAdoptCurrent(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	window, terminal, err := fakeGhostty.NewWindow("")
-	if err != nil {
-		t.Fatalf("seed focused window: %v", err)
-	}
-	sessionName := fmt.Sprintf("adopt-%d", time.Now().UnixNano())
-	if err := service.tmux.NewSession(sessionName); err != nil {
-		t.Fatalf("create adopt tmux session: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = service.tmux.KillSession(sessionName)
-	})
-	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
-		if terminalID != terminal.ID {
-			t.Fatalf("unexpected terminal id: %s", terminalID)
-		}
-		return currentTerminalProbe{
-			InsideTmux:  true,
-			TmuxSession: sessionName,
-			TmuxPane:    sessionName + ":0.0",
-		}, nil
-	}
-
-	inspection, err := service.InspectCurrent()
-	if err != nil {
-		t.Fatalf("inspect current: %v", err)
-	}
-	if !inspection.Adoptable {
-		t.Fatalf("expected current focus to be adoptable, got %+v", inspection)
-	}
-
-	result, err := service.AdoptCurrent()
-	if err != nil {
-		t.Fatalf("adopt current: %v", err)
-	}
-	if result.Workspace.GhosttyWindowID != window.ID {
-		t.Fatalf("expected adopted workspace to stay in focused window")
-	}
-	if result.Pane.GhosttyTerminalID != terminal.ID {
-		t.Fatalf("expected adopted pane to reuse focused terminal")
-	}
-	if result.Pane.LocalTmuxSession != sessionName {
-		t.Fatalf("unexpected adopted local tmux session: %q", result.Pane.LocalTmuxSession)
-	}
-	if result.Pane.LocalTmuxTarget != sessionName+":0.0" {
-		t.Fatalf("unexpected adopted local tmux target: %q", result.Pane.LocalTmuxTarget)
-	}
-	if result.Pane.OwnsLocalTmux {
-		t.Fatalf("adopted pane must not own the pre-existing tmux session")
-	}
-}
-
 func TestAttachHostPersistsRemoteTmuxMetadata(t *testing.T) {
 	service := newTestServiceWithRemote(t, fakeRemoteClient{
 		attachResult: remote.ResolvedTarget{
@@ -451,312 +397,15 @@ func TestAttachHostPersistsRemoteTmuxMetadata(t *testing.T) {
 	}
 }
 
-func TestInspectCurrentUsesRequireAvailableWithoutLaunch(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	_, terminal, err := fakeGhostty.NewWindow("")
-	if err != nil {
-		t.Fatalf("seed focused window: %v", err)
-	}
-	fakeGhostty.newWindowCalls = 0
-
-	sessionName := fmt.Sprintf("inspect-%d", time.Now().UnixNano())
-	if err := service.tmux.NewSession(sessionName); err != nil {
-		t.Fatalf("create inspect tmux session: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = service.tmux.KillSession(sessionName)
+func TestConnectHostStopsAtJumpServerMenu(t *testing.T) {
+	service := newTestServiceWithRemote(t, fakeRemoteClient{
+		connectResult: remote.ConnectedProvider{
+			Provider:          remote.ProviderJumpServer,
+			Stage:             model.StageTargetSearch,
+			StageTrace:        []model.PaneStage{model.StageMenu, model.StageTargetSearch},
+			ReadyForUserInput: true,
+		},
 	})
-	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
-		if terminalID != terminal.ID {
-			t.Fatalf("unexpected terminal id: %s", terminalID)
-		}
-		return currentTerminalProbe{
-			InsideTmux:  true,
-			TmuxSession: sessionName,
-			TmuxPane:    sessionName + ":0.0",
-		}, nil
-	}
-
-	inspection, err := service.InspectCurrent()
-	if err != nil {
-		t.Fatalf("inspect current: %v", err)
-	}
-	if !inspection.Adoptable {
-		t.Fatalf("expected current focus to be adoptable, got %+v", inspection)
-	}
-	if fakeGhostty.requireCalls != 1 {
-		t.Fatalf("expected RequireAvailable to be used once, got %d", fakeGhostty.requireCalls)
-	}
-	if fakeGhostty.ensureCalls != 0 {
-		t.Fatalf("expected current-window inspect not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
-	}
-	if fakeGhostty.newWindowCalls != 0 {
-		t.Fatalf("expected inspect current not to create a new window, got %d", fakeGhostty.newWindowCalls)
-	}
-}
-
-func TestAdoptCurrentUsesRequireAvailableWithoutLaunch(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	window, terminal, err := fakeGhostty.NewWindow("")
-	if err != nil {
-		t.Fatalf("seed focused window: %v", err)
-	}
-	fakeGhostty.newWindowCalls = 0
-
-	sessionName := fmt.Sprintf("adopt-no-launch-%d", time.Now().UnixNano())
-	if err := service.tmux.NewSession(sessionName); err != nil {
-		t.Fatalf("create adopt tmux session: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = service.tmux.KillSession(sessionName)
-	})
-	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
-		if terminalID != terminal.ID {
-			t.Fatalf("unexpected terminal id: %s", terminalID)
-		}
-		return currentTerminalProbe{
-			InsideTmux:  true,
-			TmuxSession: sessionName,
-			TmuxPane:    sessionName + ":0.0",
-		}, nil
-	}
-
-	result, err := service.AdoptCurrent()
-	if err != nil {
-		t.Fatalf("adopt current: %v", err)
-	}
-	if result.Workspace.GhosttyWindowID != window.ID {
-		t.Fatalf("expected adopted workspace to stay in focused window")
-	}
-	if fakeGhostty.requireCalls != 1 {
-		t.Fatalf("expected RequireAvailable to be used once, got %d", fakeGhostty.requireCalls)
-	}
-	if fakeGhostty.ensureCalls != 0 {
-		t.Fatalf("expected adopt current not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
-	}
-	if fakeGhostty.newWindowCalls != 0 {
-		t.Fatalf("expected adopt current not to create a new window, got %d", fakeGhostty.newWindowCalls)
-	}
-}
-
-func TestInspectCurrentReportsBootstrappableLocalShell(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	if _, terminal, err := fakeGhostty.NewWindow(""); err != nil {
-		t.Fatalf("seed focused window: %v", err)
-	} else {
-		service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
-			if terminalID != terminal.ID {
-				t.Fatalf("unexpected terminal id: %s", terminalID)
-			}
-			return currentTerminalProbe{
-				InsideTmux:    false,
-				TmuxAvailable: true,
-			}, nil
-		}
-	}
-	fakeGhostty.newWindowCalls = 0
-
-	inspection, err := service.InspectCurrent()
-	if err != nil {
-		t.Fatalf("inspect current: %v", err)
-	}
-	if inspection.Adoptable {
-		t.Fatalf("expected current focus not to be directly adoptable")
-	}
-	if !inspection.Bootstrappable {
-		t.Fatalf("expected current focus to be bootstrappable")
-	}
-	if !strings.Contains(inspection.Reason, "workspace bootstrap-current") {
-		t.Fatalf("unexpected inspect current reason: %q", inspection.Reason)
-	}
-	if fakeGhostty.ensureCalls != 0 {
-		t.Fatalf("expected inspect current not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
-	}
-	if fakeGhostty.newWindowCalls != 0 {
-		t.Fatalf("expected inspect current not to create a new window, got %d", fakeGhostty.newWindowCalls)
-	}
-}
-
-func TestBootstrapCurrentUsesCurrentWindowWithoutLaunch(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	window, terminal, err := fakeGhostty.NewWindow("")
-	if err != nil {
-		t.Fatalf("seed focused window: %v", err)
-	}
-	fakeGhostty.newWindowCalls = 0
-
-	var attachCommand string
-	var bootstrappedSession string
-	fakeGhostty.inputTextHook = func(terminalID string, text string) error {
-		if terminalID != terminal.ID {
-			t.Fatalf("unexpected terminal id: %s", terminalID)
-		}
-		attachCommand = text
-		parts := strings.Split(text, "-t ")
-		if len(parts) != 2 {
-			t.Fatalf("unexpected bootstrap attach command: %q", text)
-		}
-		bootstrappedSession = strings.TrimSpace(parts[1])
-		return nil
-	}
-
-	probeCalls := 0
-	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
-		if terminalID != terminal.ID {
-			t.Fatalf("unexpected terminal id: %s", terminalID)
-		}
-		probeCalls++
-		if probeCalls == 1 {
-			return currentTerminalProbe{
-				InsideTmux:    false,
-				TmuxAvailable: true,
-			}, nil
-		}
-		if bootstrappedSession == "" {
-			t.Fatalf("expected bootstrap session to be captured before second probe")
-		}
-		return currentTerminalProbe{
-			InsideTmux:    true,
-			TmuxSession:   bootstrappedSession,
-			TmuxPane:      bootstrappedSession + ":0.0",
-			TmuxAvailable: true,
-		}, nil
-	}
-
-	result, err := service.BootstrapCurrent()
-	if err != nil {
-		t.Fatalf("bootstrap current: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = service.CloseWorkspace(result.Workspace.ID)
-	})
-
-	if !strings.Contains(attachCommand, "exec tmux attach-session -t ") {
-		t.Fatalf("unexpected bootstrap command: %q", attachCommand)
-	}
-	if result.Workspace.GhosttyWindowID != window.ID {
-		t.Fatalf("expected bootstrapped workspace to stay in focused window")
-	}
-	if result.Workspace.LaunchMode != model.WorkspaceLaunchModeCurrentWindow {
-		t.Fatalf("expected bootstrapped workspace launch mode current_window, got %q", result.Workspace.LaunchMode)
-	}
-	if result.Pane.GhosttyTerminalID != terminal.ID {
-		t.Fatalf("expected bootstrapped pane to reuse focused terminal")
-	}
-	if result.Pane.LocalTmuxSession != bootstrappedSession {
-		t.Fatalf("unexpected bootstrapped local tmux session: %q", result.Pane.LocalTmuxSession)
-	}
-	if !result.Pane.OwnsLocalTmux {
-		t.Fatalf("expected bootstrapped pane to own its local tmux session")
-	}
-	if fakeGhostty.requireCalls == 0 {
-		t.Fatalf("expected bootstrap current to probe Ghostty availability")
-	}
-	if fakeGhostty.ensureCalls != 0 {
-		t.Fatalf("expected bootstrap current not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
-	}
-	if fakeGhostty.newWindowCalls != 0 {
-		t.Fatalf("expected bootstrap current not to create a new window, got %d", fakeGhostty.newWindowCalls)
-	}
-}
-
-func TestBootstrapCurrentFailsForRemoteShell(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	if _, terminal, err := fakeGhostty.NewWindow(""); err != nil {
-		t.Fatalf("seed focused window: %v", err)
-	} else {
-		service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
-			if terminalID != terminal.ID {
-				t.Fatalf("unexpected terminal id: %s", terminalID)
-			}
-			return currentTerminalProbe{
-				InsideTmux:    false,
-				RemoteShell:   true,
-				TmuxAvailable: true,
-			}, nil
-		}
-	}
-
-	if _, err := service.BootstrapCurrent(); err == nil {
-		t.Fatalf("expected bootstrap current to fail for remote shell")
-	}
-	if len(service.state.Workspaces) != 0 {
-		t.Fatalf("expected no workspace to be created for remote shell bootstrap attempt")
-	}
-}
-
-func TestSplitCurrentUsesFocusedWindowWithoutLaunch(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	window, terminal, err := fakeGhostty.NewWindow("")
-	if err != nil {
-		t.Fatalf("seed focused window: %v", err)
-	}
-	fakeGhostty.newWindowCalls = 0
-
-	result, err := service.SplitCurrent("up", "agent")
-	if err != nil {
-		t.Fatalf("split current: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = service.CloseWorkspace(result.Workspace.ID)
-	})
-
-	if result.Workspace.GhosttyWindowID != window.ID {
-		t.Fatalf("expected split-current workspace to stay in focused window")
-	}
-	if result.Workspace.LaunchMode != model.WorkspaceLaunchModeCurrentWindow {
-		t.Fatalf("expected split-current workspace launch mode current_window, got %q", result.Workspace.LaunchMode)
-	}
-	if result.Pane.Controller != model.ControllerAgent {
-		t.Fatalf("expected claimed pane controller agent, got %q", result.Pane.Controller)
-	}
-	if result.Pane.GhosttyTerminalID == terminal.ID {
-		t.Fatalf("expected split-current to create a new terminal instead of reusing the focused terminal")
-	}
-	if !result.Pane.OwnsLocalTmux {
-		t.Fatalf("expected split-current pane to own its local tmux session")
-	}
-	if fakeGhostty.requireCalls == 0 {
-		t.Fatalf("expected split-current to probe Ghostty availability")
-	}
-	if fakeGhostty.ensureCalls != 0 {
-		t.Fatalf("expected split-current not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
-	}
-	if fakeGhostty.newWindowCalls != 0 {
-		t.Fatalf("expected split-current not to create a new window, got %d", fakeGhostty.newWindowCalls)
-	}
-}
-
-func TestAdoptCurrentFailsWhenNotInsideTmux(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	if _, _, err := fakeGhostty.NewWindow(""); err != nil {
-		t.Fatalf("seed focused window: %v", err)
-	}
-	service.probeCurrent = func(string) (currentTerminalProbe, error) {
-		return currentTerminalProbe{InsideTmux: false}, nil
-	}
-
-	inspection, err := service.InspectCurrent()
-	if err != nil {
-		t.Fatalf("inspect current: %v", err)
-	}
-	if inspection.Adoptable {
-		t.Fatalf("expected current focus to be non-adoptable")
-	}
-	if _, err := service.AdoptCurrent(); err == nil {
-		t.Fatalf("expected adopt current to fail outside tmux")
-	}
-}
-
-func TestAdoptCurrentFailsWhenCurrentTerminalAlreadyManaged(t *testing.T) {
-	service := newTestService(t)
 	created, err := service.CreateWorkspace()
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
@@ -765,127 +414,249 @@ func TestAdoptCurrentFailsWhenCurrentTerminalAlreadyManaged(t *testing.T) {
 		_ = service.CloseWorkspace(created.Workspace.ID)
 	})
 
-	inspection, err := service.InspectCurrent()
+	result, err := service.ConnectHost(created.Pane.ID)
 	if err != nil {
-		t.Fatalf("inspect current: %v", err)
+		t.Fatalf("connect host: %v", err)
 	}
-	if !inspection.Managed {
-		t.Fatalf("expected focused terminal to already be managed")
+	if result.Provider != remote.ProviderJumpServer {
+		t.Fatalf("unexpected provider: %q", result.Provider)
 	}
-	if _, err := service.AdoptCurrent(); err == nil {
-		t.Fatalf("expected adopt current to fail for a managed terminal")
+	if result.Stage != model.StageTargetSearch {
+		t.Fatalf("unexpected stage: %q", result.Stage)
+	}
+	if !result.ReadyForUserInput {
+		t.Fatalf("expected connect result to be ready for user input")
+	}
+	if len(result.StageTrace) != 2 {
+		t.Fatalf("unexpected stage trace: %#v", result.StageTrace)
+	}
+	if result.Pane.RemoteProvider != remote.ProviderJumpServer {
+		t.Fatalf("expected pane remote provider jumpserver, got %q", result.Pane.RemoteProvider)
+	}
+	if result.Pane.HostQuery != "" || result.Pane.HostResolvedName != "" {
+		t.Fatalf("expected host metadata to stay empty after connect, got %+v", result.Pane)
 	}
 }
 
-func TestCurrentWindowFailsWhenFocusChangesDuringProbe(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	firstFocus := ghostty.FocusContext{
-		Window:   ghostty.WindowRef{ID: "window-a", Name: "window-a", SelectedTabID: "tab-a"},
-		Tab:      ghostty.TabRef{ID: "tab-a", Name: "tab-a", Index: 1, Selected: true, FocusedTerminalID: "term-a"},
-		Terminal: ghostty.TerminalRef{ID: "term-a", Name: "term-a", WorkingDirectory: "/tmp/a"},
+func TestCloseWorkspacePrunesTrackedStateAndActions(t *testing.T) {
+	service, tmuxClient := newTestServiceWithRemoteAndTmux(t, fakeRemoteClient{})
+	created, err := service.CreateWorkspace()
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
 	}
-	secondFocus := ghostty.FocusContext{
-		Window:   ghostty.WindowRef{ID: "window-b", Name: "window-b", SelectedTabID: "tab-b"},
-		Tab:      ghostty.TabRef{ID: "tab-b", Name: "tab-b", Index: 1, Selected: true, FocusedTerminalID: "term-b"},
-		Terminal: ghostty.TerminalRef{ID: "term-b", Name: "term-b", WorkingDirectory: "/tmp/b"},
+	if _, err := service.Claim(created.Pane.ID, "agent"); err != nil {
+		t.Fatalf("claim agent: %v", err)
 	}
-	fakeGhostty.focus = firstFocus
-	fakeGhostty.inspectResults = []fakeGhosttyFocusResult{
-		{focus: firstFocus},
-		{focus: secondFocus},
-		{focus: firstFocus},
-		{focus: secondFocus},
+	preview, err := service.PreviewCommand(created.Pane.ID, "agent", "echo risky > "+filepath.Join(t.TempDir(), "close-workspace.txt"))
+	if err != nil {
+		t.Fatalf("preview risky command: %v", err)
 	}
-	service.probeCurrent = func(terminalID string) (currentTerminalProbe, error) {
-		if terminalID != firstFocus.Terminal.ID {
-			t.Fatalf("unexpected terminal id: %s", terminalID)
-		}
-		return currentTerminalProbe{
-			InsideTmux:  true,
-			TmuxSession: "focus-shift",
-			TmuxPane:    "focus-shift:0.0",
-		}, nil
+	if !preview.RequiresApproval || preview.Action == nil {
+		t.Fatalf("expected pending action before close")
+	}
+	service.lastObserved[created.Pane.ID] = time.Now().UTC()
+
+	if err := service.CloseWorkspace(created.Workspace.ID); err != nil {
+		t.Fatalf("close workspace: %v", err)
 	}
 
-	inspection, err := service.InspectCurrent()
+	if len(service.state.Workspaces) != 0 || len(service.state.Panes) != 0 {
+		t.Fatalf("expected workspace and panes to be pruned, got workspaces=%d panes=%d", len(service.state.Workspaces), len(service.state.Panes))
+	}
+	if len(service.actions) != 0 {
+		t.Fatalf("expected actions to be pruned, got %d", len(service.actions))
+	}
+	if _, ok := service.lastObserved[created.Pane.ID]; ok {
+		t.Fatalf("expected observe state to be pruned for %s", created.Pane.ID)
+	}
+	alive, err := tmuxClient.HasSession(created.Pane.LocalTmuxSession)
 	if err != nil {
-		t.Fatalf("inspect current: %v", err)
+		t.Fatalf("check tmux session: %v", err)
 	}
-	if inspection.Adoptable {
-		t.Fatalf("expected inspect current to reject focus drift")
+	if alive {
+		t.Fatalf("expected owned tmux session %s to be killed", created.Pane.LocalTmuxSession)
 	}
-	if inspection.Reason != "focused terminal changed during probe" {
-		t.Fatalf("unexpected inspect current reason: %q", inspection.Reason)
+	actions, err := service.ListActions()
+	if err != nil {
+		t.Fatalf("list actions: %v", err)
 	}
-	if _, err := service.AdoptCurrent(); err == nil {
-		t.Fatalf("expected adopt current to fail when focus changes during probe")
-	}
-	if len(service.state.Workspaces) != 0 {
-		t.Fatalf("expected no workspace to be created after probe focus drift")
-	}
-	if fakeGhostty.newWindowCalls != 0 {
-		t.Fatalf("expected no new Ghostty window to be created, got %d", fakeGhostty.newWindowCalls)
+	if len(actions) != 0 {
+		t.Fatalf("expected actions.list to be empty after close, got %d", len(actions))
 	}
 }
 
-func TestProbeCurrentTerminalUsesShortTempScript(t *testing.T) {
-	service := newTestService(t)
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-
-	var typedCommand string
-	fakeGhostty.inputTextHook = func(_ string, text string) error {
-		typedCommand = text
-		return nil
+func TestNewServiceStartupGCPrunesPersistedStaleState(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := logx.New("")
+	if err != nil {
+		t.Fatalf("create logger: %v", err)
 	}
-	fakeGhostty.sendKeyHook = func(_ string, key string, _ []string) error {
-		if key != "enter" {
-			return fmt.Errorf("unexpected key: %s", key)
-		}
-		scriptPath := strings.TrimSpace(typedCommand)
-		script, err := os.ReadFile(scriptPath)
+	runner := execx.NewRunner(logger)
+	tmuxClient := newTrackingTmuxClient(tmux.New(runner))
+
+	closedWorkspace := model.NewWorkspace()
+	closedWorkspace.Status = model.WorkspaceClosed
+	closedPane := model.NewPane(closedWorkspace.ID)
+	closedPane.Mode = model.ModeDisconnected
+	closedWorkspace.PaneIDs = []string{closedPane.ID}
+	if err := tmuxClient.NewSession(closedPane.LocalTmuxSession); err != nil {
+		t.Fatalf("seed closed tmux session: %v", err)
+	}
+
+	staleWorkspace := model.NewWorkspace()
+	staleWorkspace.Status = model.WorkspaceDegraded
+	staleWorkspace.GhosttyWindowID = "missing-window"
+	staleWorkspace.GhosttyTabID = "missing-tab"
+	stalePane := model.NewPane(staleWorkspace.ID)
+	stalePane.GhosttyTerminalID = "missing-terminal"
+	stalePane.Mode = model.ModeDisconnected
+	staleWorkspace.PaneIDs = []string{stalePane.ID}
+	if err := tmuxClient.NewSession(stalePane.LocalTmuxSession); err != nil {
+		t.Fatalf("seed stale tmux session: %v", err)
+	}
+
+	state := model.NewState()
+	state.Workspaces[closedWorkspace.ID] = closedWorkspace
+	state.Workspaces[staleWorkspace.ID] = staleWorkspace
+	state.Panes[closedPane.ID] = closedPane
+	state.Panes[stalePane.ID] = stalePane
+	actions := []model.Action{
+		model.NewAction(closedPane.ID, "agent", "echo closed", "echo closed", model.RiskRisky, model.ApprovalPending, model.ActionQueued),
+		model.NewAction(stalePane.ID, "agent", "echo stale", "echo stale", model.RiskRead, model.ApprovalNotRequired, model.ActionCompleted),
+	}
+
+	statePath := filepath.Join(dir, "state.json")
+	actionsPath := filepath.Join(dir, "actions.json")
+	stateStore := store.New(statePath, actionsPath)
+	if err := stateStore.SaveState(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	if err := stateStore.SaveActions(actions); err != nil {
+		t.Fatalf("save actions: %v", err)
+	}
+
+	service, err := NewService(
+		statePath,
+		actionsPath,
+		2*time.Second,
+		logger,
+		newFakeGhosttyClient(),
+		tmuxClient,
+		fakeRemoteClient{},
+	)
+	if err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+
+	if len(service.state.Workspaces) != 0 || len(service.state.Panes) != 0 {
+		t.Fatalf("expected startup GC to prune stale persisted state, got workspaces=%d panes=%d", len(service.state.Workspaces), len(service.state.Panes))
+	}
+	if len(service.actions) != 0 {
+		t.Fatalf("expected startup GC to prune persisted actions, got %d", len(service.actions))
+	}
+	for _, session := range []string{closedPane.LocalTmuxSession, stalePane.LocalTmuxSession} {
+		alive, err := tmuxClient.HasSession(session)
 		if err != nil {
-			return fmt.Errorf("read probe script: %w", err)
+			t.Fatalf("check session %s: %v", session, err)
 		}
-		if !strings.Contains(string(script), "tmux display-message") {
-			return fmt.Errorf("probe script did not include tmux probe")
+		if alive {
+			t.Fatalf("expected startup GC to kill session %s", session)
 		}
-		probePath := strings.TrimSuffix(scriptPath, ".sh") + ".json"
-		return os.WriteFile(probePath, []byte(`{"inside_tmux":true,"tmux_session":"local-test","tmux_pane":"local-test:0.0"}`), 0o600)
 	}
-
-	probe, err := service.probeCurrentTerminal("terminal-test")
+	persistedState, err := stateStore.LoadState()
 	if err != nil {
-		t.Fatalf("probe current terminal: %v", err)
+		t.Fatalf("reload state: %v", err)
 	}
-	if !probe.InsideTmux {
-		t.Fatalf("expected probe to report tmux")
+	if len(persistedState.Workspaces) != 0 || len(persistedState.Panes) != 0 {
+		t.Fatalf("expected persisted state to be compacted, got %#v", persistedState)
 	}
-	if probe.TmuxSession != "local-test" {
-		t.Fatalf("unexpected tmux session: %q", probe.TmuxSession)
+	persistedActions, err := stateStore.LoadActions()
+	if err != nil {
+		t.Fatalf("reload actions: %v", err)
 	}
-	if probe.TmuxPane != "local-test:0.0" {
-		t.Fatalf("unexpected tmux pane: %q", probe.TmuxPane)
-	}
-	if !strings.HasPrefix(typedCommand, " /tmp/tmux-ghostty-probe-") {
-		t.Fatalf("expected short temp script command, got %q", typedCommand)
-	}
-	if strings.Contains(typedCommand, "tmux display-message") || strings.Contains(typedCommand, "inside_tmux") {
-		t.Fatalf("expected injected command to hide inline probe shell, got %q", typedCommand)
-	}
-
-	scriptPath := strings.TrimSpace(typedCommand)
-	if _, err := os.Stat(scriptPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected probe script to be cleaned up, stat err=%v", err)
-	}
-	probePath := strings.TrimSuffix(scriptPath, ".sh") + ".json"
-	if _, err := os.Stat(probePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected probe json to be cleaned up, stat err=%v", err)
+	if len(persistedActions) != 0 {
+		t.Fatalf("expected persisted actions to be compacted, got %d", len(persistedActions))
 	}
 }
 
-func TestSplitPaneAddsPaneToWorkspace(t *testing.T) {
+func TestPeriodicGCRemovesOrphanManagedSessionsOnly(t *testing.T) {
+	service, tmuxClient := newTestServiceWithRemoteAndTmux(t, fakeRemoteClient{})
+	managedSession := model.NewPane("ws-orphan-test").LocalTmuxSession
+	nonManagedSession := fmt.Sprintf("usergc-%d", time.Now().UnixNano())
+	if err := tmuxClient.NewSession(managedSession); err != nil {
+		t.Fatalf("seed orphan managed session: %v", err)
+	}
+	if err := tmuxClient.NewSession(nonManagedSession); err != nil {
+		t.Fatalf("seed non-managed session: %v", err)
+	}
+
+	service.lastGCAt = time.Now().UTC().Add(-observeGCInterval - time.Second)
+	service.pollOnce(time.Now().UTC())
+
+	managedAlive, err := tmuxClient.HasSession(managedSession)
+	if err != nil {
+		t.Fatalf("check managed session: %v", err)
+	}
+	if managedAlive {
+		t.Fatalf("expected periodic GC to kill orphan managed session")
+	}
+	nonManagedAlive, err := tmuxClient.HasSession(nonManagedSession)
+	if err != nil {
+		t.Fatalf("check non-managed session: %v", err)
+	}
+	if !nonManagedAlive {
+		t.Fatalf("expected periodic GC to keep non-managed session")
+	}
+	_ = tmuxClient.KillSession(nonManagedSession)
+}
+
+func TestStatusGCPrunesStaleEntriesAndShrinksCounts(t *testing.T) {
 	service := newTestService(t)
+	healthy, err := service.CreateWorkspace()
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = service.CloseWorkspace(healthy.Workspace.ID)
+	})
+
+	staleWorkspace := model.NewWorkspace()
+	staleWorkspace.LaunchMode = model.WorkspaceLaunchModeCurrentWindow
+	staleWorkspace.GhosttyWindowID = "missing-window"
+	staleWorkspace.GhosttyTabID = "missing-tab"
+	stalePane := model.NewPane(staleWorkspace.ID)
+	stalePane.GhosttyTerminalID = "missing-terminal"
+	staleWorkspace.PaneIDs = []string{stalePane.ID}
+	service.state.Workspaces[staleWorkspace.ID] = staleWorkspace
+	service.state.Panes[stalePane.ID] = stalePane
+	service.actions = append(service.actions, model.NewAction(stalePane.ID, "agent", "echo stale", "echo stale", model.RiskRead, model.ApprovalNotRequired, model.ActionCompleted))
+
+	status, err := service.Status()
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.WorkspaceCount != 1 || status.PaneCount != 1 {
+		t.Fatalf("expected stale entries to be pruned from status counts, got %+v", status)
+	}
+	if len(status.Workspaces) != 1 || status.Workspaces[0].ID != healthy.Workspace.ID {
+		t.Fatalf("expected only healthy workspace in status, got %+v", status.Workspaces)
+	}
+	if len(status.Panes) != 1 || status.Panes[0].ID != healthy.Pane.ID {
+		t.Fatalf("expected only healthy pane in status, got %+v", status.Panes)
+	}
+	if _, ok := service.state.Workspaces[staleWorkspace.ID]; ok {
+		t.Fatalf("expected stale workspace to be pruned from broker state")
+	}
+	if _, ok := service.state.Panes[stalePane.ID]; ok {
+		t.Fatalf("expected stale pane to be pruned from broker state")
+	}
+	if len(service.actions) != 0 {
+		t.Fatalf("expected actions tied to pruned panes to be removed, got %d", len(service.actions))
+	}
+}
+
+func TestGCPreservesHealthyWorkspaceAndSession(t *testing.T) {
+	service, tmuxClient := newTestServiceWithRemoteAndTmux(t, fakeRemoteClient{})
 	created, err := service.CreateWorkspace()
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
@@ -894,44 +665,17 @@ func TestSplitPaneAddsPaneToWorkspace(t *testing.T) {
 		_ = service.CloseWorkspace(created.Workspace.ID)
 	})
 
-	newPane, err := service.SplitPane(created.Pane.ID, "up", "agent")
-	if err != nil {
-		t.Fatalf("split pane: %v", err)
-	}
-	if newPane.WorkspaceID != created.Workspace.ID {
-		t.Fatalf("expected split pane to stay in the same workspace")
-	}
-	if newPane.Controller != model.ControllerAgent {
-		t.Fatalf("expected split pane claim to set controller agent, got %q", newPane.Controller)
-	}
-	if !newPane.OwnsLocalTmux {
-		t.Fatalf("expected broker-created split pane to own its local tmux session")
-	}
-	if len(service.state.Workspaces[created.Workspace.ID].PaneIDs) != 2 {
-		t.Fatalf("expected workspace to contain two panes after split")
-	}
-}
+	service.gcLocked(time.Now().UTC())
 
-func TestSplitPaneRollsBackStateOnGhosttyFailure(t *testing.T) {
-	service := newTestService(t)
-	created, err := service.CreateWorkspace()
+	if len(service.state.Workspaces) != 1 || len(service.state.Panes) != 1 {
+		t.Fatalf("expected healthy workspace to survive GC, got workspaces=%d panes=%d", len(service.state.Workspaces), len(service.state.Panes))
+	}
+	alive, err := tmuxClient.HasSession(created.Pane.LocalTmuxSession)
 	if err != nil {
-		t.Fatalf("create workspace: %v", err)
+		t.Fatalf("check tmux session: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = service.CloseWorkspace(created.Workspace.ID)
-	})
-
-	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
-	fakeGhostty.splitErr = errors.New("split failed")
-	if _, err := service.SplitPane(created.Pane.ID, "right", ""); err == nil {
-		t.Fatalf("expected split pane to fail")
-	}
-	if len(service.state.Workspaces[created.Workspace.ID].PaneIDs) != 1 {
-		t.Fatalf("expected workspace pane membership to roll back on split failure")
-	}
-	if len(service.state.Panes) != 1 {
-		t.Fatalf("expected pane state to roll back on split failure")
+	if !alive {
+		t.Fatalf("expected healthy pane session to remain alive")
 	}
 }
 
@@ -972,24 +716,51 @@ func TestReconcileDoesNotRebuildCurrentWindowWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if len(workspaces) != 1 {
-		t.Fatalf("expected one workspace after reconcile, got %d", len(workspaces))
+	if len(workspaces) != 0 {
+		t.Fatalf("expected stale current-window workspace to be pruned, got %d workspaces", len(workspaces))
 	}
-	got := service.state.Workspaces[workspace.ID]
-	if got.Status != model.WorkspaceDegraded {
-		t.Fatalf("expected current-window workspace to become degraded, got %q", got.Status)
-	}
-	if got.GhosttyWindowID != "" || got.GhosttyTabID != "" {
-		t.Fatalf("expected stale current-window workspace ghostty refs to be cleared, got %+v", got)
-	}
-	if refreshed := service.state.Panes[pane.ID]; refreshed.GhosttyTerminalID != "" || refreshed.Mode != model.ModeDisconnected {
-		t.Fatalf("expected stale pane to disconnect without rebuild, got %+v", refreshed)
+	if len(service.state.Workspaces) != 0 || len(service.state.Panes) != 0 {
+		t.Fatalf("expected stale current-window workspace state to be removed")
 	}
 	if fakeGhostty.ensureCalls != 0 {
 		t.Fatalf("expected reconcile not to call EnsureRunning for current-window workspace, got %d", fakeGhostty.ensureCalls)
 	}
 	if fakeGhostty.newWindowCalls != 0 {
 		t.Fatalf("expected reconcile not to create a new window for current-window workspace, got %d", fakeGhostty.newWindowCalls)
+	}
+}
+
+func TestReconcileDoesNotRebuildMultiPaneWorkspace(t *testing.T) {
+	service := newTestService(t)
+	fakeGhostty := service.ghostty.(*fakeGhosttyClient)
+
+	workspace := model.NewWorkspace()
+	workspace.GhosttyWindowID = "missing-window"
+	workspace.GhosttyTabID = "missing-tab"
+	firstPane := model.NewPane(workspace.ID)
+	firstPane.GhosttyTerminalID = "missing-terminal-1"
+	secondPane := model.NewPane(workspace.ID)
+	secondPane.GhosttyTerminalID = "missing-terminal-2"
+	workspace.PaneIDs = []string{firstPane.ID, secondPane.ID}
+	service.state.Workspaces[workspace.ID] = workspace
+	service.state.Panes[firstPane.ID] = firstPane
+	service.state.Panes[secondPane.ID] = secondPane
+
+	workspaces, err := service.Reconcile()
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(workspaces) != 0 {
+		t.Fatalf("expected stale multi-pane workspace to be pruned, got %d workspaces", len(workspaces))
+	}
+	if len(service.state.Workspaces) != 0 || len(service.state.Panes) != 0 {
+		t.Fatalf("expected stale multi-pane workspace state to be removed")
+	}
+	if fakeGhostty.ensureCalls != 0 {
+		t.Fatalf("expected reconcile not to call EnsureRunning for multi-pane workspace, got %d", fakeGhostty.ensureCalls)
+	}
+	if fakeGhostty.newWindowCalls != 0 {
+		t.Fatalf("expected reconcile not to create a new window for multi-pane workspace, got %d", fakeGhostty.newWindowCalls)
 	}
 }
 
@@ -1011,19 +782,11 @@ func TestStatusSyncClearsMissingCurrentWindowTopology(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if status.WorkspaceCount != 1 || status.PaneCount != 1 {
+	if status.WorkspaceCount != 0 || status.PaneCount != 0 {
 		t.Fatalf("unexpected status counts: %+v", status)
 	}
-	gotWorkspace := service.state.Workspaces[workspace.ID]
-	gotPane := service.state.Panes[pane.ID]
-	if gotWorkspace.Status != model.WorkspaceDegraded {
-		t.Fatalf("expected status sync to degrade stale current-window workspace, got %q", gotWorkspace.Status)
-	}
-	if gotWorkspace.GhosttyWindowID != "" || gotWorkspace.GhosttyTabID != "" {
-		t.Fatalf("expected status sync to clear stale Ghostty refs, got %+v", gotWorkspace)
-	}
-	if gotPane.GhosttyTerminalID != "" || gotPane.Mode != model.ModeDisconnected {
-		t.Fatalf("expected status sync to disconnect stale pane, got %+v", gotPane)
+	if len(service.state.Workspaces) != 0 || len(service.state.Panes) != 0 {
+		t.Fatalf("expected stale current-window topology to be pruned after status sync")
 	}
 	if fakeGhostty.ensureCalls != 0 {
 		t.Fatalf("expected status sync not to call EnsureRunning, got %d", fakeGhostty.ensureCalls)
@@ -1081,10 +844,17 @@ func TestRPCServerRoundTrip(t *testing.T) {
 
 func newTestService(t *testing.T) *Service {
 	t.Helper()
-	return newTestServiceWithRemote(t, fakeRemoteClient{})
+	service, _ := newTestServiceWithRemoteAndTmux(t, fakeRemoteClient{})
+	return service
 }
 
 func newTestServiceWithRemote(t *testing.T, remoteClient RemoteClient) *Service {
+	t.Helper()
+	service, _ := newTestServiceWithRemoteAndTmux(t, remoteClient)
+	return service
+}
+
+func newTestServiceWithRemoteAndTmux(t *testing.T, remoteClient RemoteClient) (*Service, *trackingTmuxClient) {
 	t.Helper()
 	dir := t.TempDir()
 	logger, err := logx.New("")
@@ -1092,7 +862,7 @@ func newTestServiceWithRemote(t *testing.T, remoteClient RemoteClient) *Service 
 		t.Fatalf("create logger: %v", err)
 	}
 	runner := execx.NewRunner(logger)
-	tmuxClient := tmux.New(runner)
+	tmuxClient := newTrackingTmuxClient(tmux.New(runner))
 	service, err := NewService(
 		filepath.Join(dir, "state.json"),
 		filepath.Join(dir, "actions.json"),
@@ -1105,7 +875,7 @@ func newTestServiceWithRemote(t *testing.T, remoteClient RemoteClient) *Service 
 	if err != nil {
 		t.Fatalf("create service: %v", err)
 	}
-	return service
+	return service, tmuxClient
 }
 
 func waitForSnapshot(t *testing.T, service *Service, paneID string, substring string) (model.PaneSnapshot, error) {

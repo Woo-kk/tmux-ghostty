@@ -32,6 +32,26 @@ func (c *Client) HasSession(name string) (bool, error) {
 	return true, nil
 }
 
+func (c *Client) ListSessions() ([]string, error) {
+	result, err := c.run(defaultTimeout, "list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		if strings.Contains(err.Error(), "no server running") {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
+	sessions := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		sessions = append(sessions, line)
+	}
+	return sessions, nil
+}
+
 func (c *Client) NewSession(name string) error {
 	_, err := c.run(defaultTimeout, "new-session", "-d", "-A", "-s", name)
 	return err

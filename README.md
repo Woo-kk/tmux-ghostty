@@ -9,7 +9,7 @@
 - `tmux-ghostty` CLI plus auto-started `tmux-ghostty-broker`
 - Unix domain socket JSON-RPC 2.0
 - workspace / pane / action state persistence
-- Ghostty AppleScript orchestration for windows, tabs, splits, focus, text input, and key events
+- Ghostty AppleScript orchestration for windows, tabs, focus, and topology inspection
 - one logical pane = one local `tmux` session
 - pane snapshot capture from local `tmux`
 - explicit `claim` / `release` / `interrupt` / `observe`
@@ -88,17 +88,14 @@ tmux-ghostty down --force
 tmux-ghostty status
 
 tmux-ghostty workspace create
-tmux-ghostty workspace inspect-current
-tmux-ghostty workspace bootstrap-current
-tmux-ghostty workspace adopt-current
 tmux-ghostty workspace reconcile
 tmux-ghostty workspace close <workspace-id>
 
 tmux-ghostty pane list
 tmux-ghostty pane focus <pane-id>
 tmux-ghostty pane snapshot <pane-id>
-tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]
 
+tmux-ghostty host connect <pane-id>
 tmux-ghostty host attach <pane-id> <query>
 
 tmux-ghostty claim <pane-id> --actor agent
@@ -118,7 +115,11 @@ tmux-ghostty help
 
 `tmux-ghostty help` is the authoritative detailed command reference. The README keeps the high-level command tree; use the CLI for the per-command descriptions. `tmux-ghostty -h` and `tmux-ghostty --help` are equivalent aliases.
 
-`tmux-ghostty workspace inspect-current` reports whether the currently focused Ghostty terminal is directly adoptable or first needs bootstrapping. If the terminal is already inside a local tmux pane, `tmux-ghostty workspace adopt-current` keeps working in the current Ghostty window instead of opening a new one. If the terminal is a local idle shell outside tmux, `tmux-ghostty workspace bootstrap-current` starts a broker-owned tmux session in place and adopts it into a current-window workspace. In current-window mode, the CLI does not silently launch or rebuild a replacement Ghostty window; if the front window, focused terminal, or tmux context is unsuitable, it fails explicitly. `tmux-ghostty pane split` is the formal way to grow an existing workspace in-place.
+`tmux-ghostty workspace create` opens a managed workspace in a new Ghostty window and returns its first pane. Managed workspaces always use a new window; if you need another managed pane, create another workspace window.
+
+The broker now auto-collects stale tracked resources. Closing a workspace reclaims its pane/workspace monitor state immediately, actions tied to pruned panes disappear automatically, and orphaned managed `tg-pane-*` tmux sessions are killed during startup, status/reconcile sync, workspace close, and coarse periodic broker GC.
+
+`tmux-ghostty host connect <pane-id>` opens JumpServer in the pane and returns once it is ready for manual input at `menu`, `target_search`, or `auth_prompt`. `tmux-ghostty host attach <pane-id> <query>` keeps the existing behavior and only succeeds once the remote shell is ready.
 
 `tmux-ghostty version` prints build metadata. `tmux-ghostty self-update` installs a GitHub Release package over the current installation. `tmux-ghostty uninstall` removes both installed binaries and the current user's runtime data.
 
@@ -264,7 +265,8 @@ If `HOMEBREW_TAP_TOKEN` is configured, the same workflow also commits the genera
 ## Notes
 
 - Ghostty is treated as the visible frontend only. `tmux` carries the actual text/data flow, so snapshot text comes from local `tmux`, not from Ghostty content APIs.
-- `host attach` is wired through `internal/remote`, so additional remote providers such as direct SSH can be added without rewriting the broker/workspace core.
+- `host connect` and `host attach` are wired through `internal/remote`, so additional remote providers such as direct SSH can be added without rewriting the broker/workspace core.
 - The built-in `jumpserver` provider now materializes its bundled runner and expect helper under the tmux-ghostty runtime directory automatically; `TMUX_GHOSTTY_JUMP_RUNNER` still overrides that default when needed.
+- `host connect` succeeds once JumpServer reaches `menu`, `target_search`, or `auth_prompt` and returns `stage`, `stage_trace`, and `ready_for_user_input`.
 - `host attach` succeeds once the remote shell is ready. Remote tmux attach is best-effort and surfaces its outcome through `remote_tmux_status` and `remote_tmux_detail`.
 - The current test suite uses real local `tmux` and fake Ghostty orchestration so it does not spawn GUI windows during automated runs.

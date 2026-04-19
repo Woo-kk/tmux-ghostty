@@ -312,61 +312,23 @@ func runWorkspace(ctx context.Context, paths app.Paths, args []string) int {
 		usage()
 		return 1
 	}
-	client, err := app.EnsureBroker(ctx, paths)
-	if err != nil {
-		return printError(err)
-	}
 	switch args[0] {
 	case "create":
+		client, err := app.EnsureBroker(ctx, paths)
+		if err != nil {
+			return printError(err)
+		}
 		var result any
 		if err := client.Call(ctx, "workspace.create", nil, &result); err != nil {
 			return printError(err)
 		}
 		printJSON(result)
 		return 0
-	case "inspect-current":
-		var result any
-		if err := client.Call(ctx, "workspace.inspect_current", nil, &result); err != nil {
-			return printError(err)
-		}
-		printJSON(result)
-		return 0
-	case "bootstrap-current":
-		var result any
-		if err := client.Call(ctx, "workspace.bootstrap_current", nil, &result); err != nil {
-			return printError(err)
-		}
-		printJSON(result)
-		return 0
-	case "split-current":
-		flags := flag.NewFlagSet("workspace split-current", flag.ContinueOnError)
-		flags.SetOutput(os.Stderr)
-		direction := flags.String("direction", "", "split direction")
-		claim := flags.String("claim", "", "optional controller for the new pane")
-		if err := flags.Parse(args[1:]); err != nil {
-			return 1
-		}
-		if strings.TrimSpace(*direction) == "" {
-			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty workspace split-current --direction up|down|left|right [--claim agent|user]")
-			return 1
-		}
-		var result any
-		if err := client.Call(ctx, "workspace.split_current", map[string]any{
-			"direction": *direction,
-			"claim":     *claim,
-		}, &result); err != nil {
-			return printError(err)
-		}
-		printJSON(result)
-		return 0
-	case "adopt-current":
-		var result any
-		if err := client.Call(ctx, "workspace.adopt_current", nil, &result); err != nil {
-			return printError(err)
-		}
-		printJSON(result)
-		return 0
 	case "reconcile":
+		client, err := app.EnsureBroker(ctx, paths)
+		if err != nil {
+			return printError(err)
+		}
 		var result any
 		if err := client.Call(ctx, "workspace.reconcile", nil, &result); err != nil {
 			return printError(err)
@@ -377,6 +339,10 @@ func runWorkspace(ctx context.Context, paths app.Paths, args []string) int {
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "workspace id is required")
 			return 1
+		}
+		client, err := app.EnsureBroker(ctx, paths)
+		if err != nil {
+			return printError(err)
 		}
 		if err := client.Call(ctx, "workspace.close", map[string]any{"workspace_id": args[1]}, &struct{}{}); err != nil {
 			return printError(err)
@@ -394,12 +360,12 @@ func runPane(ctx context.Context, paths app.Paths, args []string) int {
 		usage()
 		return 1
 	}
-	client, err := app.EnsureBroker(ctx, paths)
-	if err != nil {
-		return printError(err)
-	}
 	switch args[0] {
 	case "list":
+		client, err := app.EnsureBroker(ctx, paths)
+		if err != nil {
+			return printError(err)
+		}
 		var result []model.Pane
 		if err := client.Call(ctx, "pane.list", nil, &result); err != nil {
 			return printError(err)
@@ -411,6 +377,10 @@ func runPane(ctx context.Context, paths app.Paths, args []string) int {
 			fmt.Fprintln(os.Stderr, "pane id is required")
 			return 1
 		}
+		client, err := app.EnsureBroker(ctx, paths)
+		if err != nil {
+			return printError(err)
+		}
 		if err := client.Call(ctx, "pane.focus", map[string]any{"pane_id": args[1]}, &struct{}{}); err != nil {
 			return printError(err)
 		}
@@ -421,37 +391,15 @@ func runPane(ctx context.Context, paths app.Paths, args []string) int {
 			fmt.Fprintln(os.Stderr, "pane id is required")
 			return 1
 		}
+		client, err := app.EnsureBroker(ctx, paths)
+		if err != nil {
+			return printError(err)
+		}
 		var snapshot model.PaneSnapshot
 		if err := client.Call(ctx, "pane.snapshot", map[string]any{"pane_id": args[1]}, &snapshot); err != nil {
 			return printError(err)
 		}
 		printJSON(snapshot)
-		return 0
-	case "split":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]")
-			return 1
-		}
-		flags := flag.NewFlagSet("pane split", flag.ContinueOnError)
-		flags.SetOutput(os.Stderr)
-		direction := flags.String("direction", "", "split direction")
-		claim := flags.String("claim", "", "optional controller for the new pane")
-		if err := flags.Parse(args[2:]); err != nil {
-			return 1
-		}
-		if strings.TrimSpace(*direction) == "" {
-			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]")
-			return 1
-		}
-		var pane model.Pane
-		if err := client.Call(ctx, "pane.split", map[string]any{
-			"pane_id":   args[1],
-			"direction": *direction,
-			"claim":     *claim,
-		}, &pane); err != nil {
-			return printError(err)
-		}
-		printJSON(pane)
 		return 0
 	default:
 		usage()
@@ -460,21 +408,46 @@ func runPane(ctx context.Context, paths app.Paths, args []string) int {
 }
 
 func runHost(ctx context.Context, paths app.Paths, args []string) int {
-	if len(args) < 1 || args[0] != "attach" || len(args) < 3 {
+	if len(args) == 0 {
 		usage()
 		return 1
 	}
-	client, err := app.EnsureBroker(ctx, paths)
-	if err != nil {
-		return printError(err)
+	switch args[0] {
+	case "connect":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty host connect <pane-id>")
+			return 1
+		}
+		client, err := app.EnsureBroker(ctx, paths)
+		if err != nil {
+			return printError(err)
+		}
+		var result any
+		if err := client.Call(ctx, "host.connect", map[string]any{"pane_id": args[1]}, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
+	case "attach":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty host attach <pane-id> <query>")
+			return 1
+		}
+		client, err := app.EnsureBroker(ctx, paths)
+		if err != nil {
+			return printError(err)
+		}
+		query := strings.Join(args[2:], " ")
+		var result any
+		if err := client.Call(ctx, "host.attach", map[string]any{"pane_id": args[1], "query": query}, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
+	default:
+		usage()
+		return 1
 	}
-	query := strings.Join(args[2:], " ")
-	var result any
-	if err := client.Call(ctx, "host.attach", map[string]any{"pane_id": args[1], "query": query}, &result); err != nil {
-		return printError(err)
-	}
-	printJSON(result)
-	return 0
 }
 
 func runClaim(ctx context.Context, paths app.Paths, args []string) int {

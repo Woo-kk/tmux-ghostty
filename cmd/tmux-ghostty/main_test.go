@@ -72,16 +72,49 @@ func TestHelpTextIncludesCommandGroupsAndKeyCommands(t *testing.T) {
 		"Approvals:",
 		"Commands:",
 		"tmux-ghostty workspace create",
-		"tmux-ghostty workspace bootstrap-current",
-		"tmux-ghostty workspace split-current --direction up|down|left|right [--claim agent|user]",
-		"tmux-ghostty workspace adopt-current",
-		"tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]",
+		"tmux-ghostty host connect <pane-id>",
 		"tmux-ghostty command send <pane-id> <command...>",
 		"Notes:",
 	} {
 		if !strings.Contains(output, fragment) {
 			t.Fatalf("help text missing %q", fragment)
 		}
+	}
+	for _, removed := range []string{
+		"tmux-ghostty workspace inspect-current",
+		"tmux-ghostty workspace bootstrap-current",
+		"tmux-ghostty workspace split-current",
+		"tmux-ghostty workspace adopt-current",
+		"tmux-ghostty pane split",
+	} {
+		if strings.Contains(output, removed) {
+			t.Fatalf("help text should not mention removed command %q", removed)
+		}
+	}
+}
+
+func TestRunRemovedWorkspaceAndPaneCommandsFallBackToUsage(t *testing.T) {
+	testCases := [][]string{
+		{"workspace", "inspect-current"},
+		{"workspace", "bootstrap-current"},
+		{"workspace", "split-current"},
+		{"workspace", "adopt-current"},
+		{"pane", "split", "pane-1"},
+	}
+
+	for _, args := range testCases {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			stdout, stderr, code := captureRunOutput(t, args)
+			if code != 1 {
+				t.Fatalf("run(%v) = %d, want 1", args, code)
+			}
+			if stdout != "" {
+				t.Fatalf("expected no stdout, got %q", stdout)
+			}
+			if stderr != usageText()+"\n" {
+				t.Fatalf("unexpected stderr for %v: %q", args, stderr)
+			}
+		})
 	}
 }
 

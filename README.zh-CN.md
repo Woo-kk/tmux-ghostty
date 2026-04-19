@@ -9,7 +9,7 @@
 - `tmux-ghostty` CLI，以及自动拉起的 `tmux-ghostty-broker`
 - 基于 Unix domain socket 的 JSON-RPC 2.0
 - workspace / pane / action 状态持久化
-- 通过 Ghostty AppleScript 编排 window、tab、split、focus、文本输入和按键事件
+- 通过 Ghostty AppleScript 编排 window、tab、focus 和拓扑探测
 - 一个逻辑 pane 对应一个本地 `tmux` session
 - 从本地 `tmux` 抓取 pane 快照
 - 显式控制权切换：`claim` / `release` / `interrupt` / `observe`
@@ -88,16 +88,14 @@ tmux-ghostty down --force
 tmux-ghostty status
 
 tmux-ghostty workspace create
-tmux-ghostty workspace inspect-current
-tmux-ghostty workspace adopt-current
 tmux-ghostty workspace reconcile
 tmux-ghostty workspace close <workspace-id>
 
 tmux-ghostty pane list
 tmux-ghostty pane focus <pane-id>
 tmux-ghostty pane snapshot <pane-id>
-tmux-ghostty pane split <pane-id> --direction up|down|left|right [--claim agent|user]
 
+tmux-ghostty host connect <pane-id>
 tmux-ghostty host attach <pane-id> <query>
 
 tmux-ghostty claim <pane-id> --actor agent
@@ -117,7 +115,11 @@ tmux-ghostty help
 
 `tmux-ghostty help` 是权威的详细命令参考。README 只保留高层级命令树，具体命令说明请以 CLI 输出为准。`tmux-ghostty -h` 和 `tmux-ghostty --help` 是等价别名。
 
-`tmux-ghostty workspace inspect-current` 会报告当前焦点 Ghostty terminal 是否可被接管。`tmux-ghostty workspace adopt-current` 会在当前 Ghostty 窗口内继续工作，而不是新开窗口。当前窗口模式下，CLI 不会再隐式拉起替代用的 Ghostty window；如果前台窗口、焦点 terminal 或 tmux 上下文不满足要求，它会明确失败。`tmux-ghostty pane split` 是在已有 workspace 内正式扩 pane 的入口。
+`tmux-ghostty workspace create` 会在一个新的 Ghostty window 中创建受管 workspace，并返回首个 pane。受管 workspace 统一使用新窗口；如果你还想再拿一个受管 pane，就再创建一个新的 workspace window。
+
+broker 现在会自动回收 stale 的受管资源。关闭 workspace 后会立刻回收对应的 pane/workspace 监控状态；被裁剪 pane 关联的 action 会自动消失；孤儿的受管 `tg-pane-*` tmux session 会在 broker 启动、status/reconcile 同步、workspace close 以及粗粒度周期 GC 中被清理。
+
+`tmux-ghostty host connect <pane-id>` 会在指定 pane 中打开 JumpServer，并在到达 `menu`、`target_search` 或 `auth_prompt` 时立刻返回，交还给用户继续输入。`tmux-ghostty host attach <pane-id> <query>` 则保留原语义，只有进到远端 shell 才算成功。
 
 `tmux-ghostty version` 会输出构建元信息。`tmux-ghostty self-update` 会用 GitHub Release 中的安装包覆盖当前安装。`tmux-ghostty uninstall` 会同时删除两个已安装二进制和当前用户的运行时数据。
 
@@ -263,7 +265,8 @@ git push origin v0.1.0
 ## 说明
 
 - Ghostty 只被当作可见前端使用。真正的文本/数据传递由 `tmux` 负责，所以快照文本来自本地 `tmux`，而不是 Ghostty 的内容 API。
-- `host attach` 现在通过 `internal/remote` 挂接 provider，后续可以扩到 SSH 直连或其他跳板机类型，而不用重写 broker/workspace 核心。
+- `host connect` 和 `host attach` 现在都通过 `internal/remote` 挂接 provider，后续可以扩到 SSH 直连或其他跳板机类型，而不用重写 broker/workspace 核心。
 - 当前内置的 `jumpserver` provider 会自动把仓库内置的 runner 和 expect helper 落到 tmux-ghostty 运行时目录；如果需要，仍然可以通过 `TMUX_GHOSTTY_JUMP_RUNNER` 覆盖默认值。
+- `host connect` 现在以 JumpServer 到达 `menu`、`target_search` 或 `auth_prompt` 为成功条件，并返回 `stage`、`stage_trace` 和 `ready_for_user_input`。
 - `host attach` 现在以远端 shell 就绪为成功条件；远端 tmux 只是 best-effort，其结果会通过 `remote_tmux_status` 和 `remote_tmux_detail` 暴露出来。
 - 当前测试套件使用真实本地 `tmux` 加 fake Ghostty 编排，因此自动化测试时不会真的弹出 GUI 窗口。

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -26,13 +24,9 @@ import (
 type GhosttyClient interface {
 	RequireAvailable() error
 	EnsureRunning() error
-	InspectFocused() (ghostty.FocusContext, error)
 	NewWindow(initialCommand string) (ghostty.WindowRef, ghostty.TerminalRef, error)
 	NewTab(windowID string, initialCommand string) (ghostty.TabRef, ghostty.TerminalRef, error)
-	SplitTerminal(terminalID string, direction string, initialCommand string) (ghostty.TerminalRef, error)
 	FocusTerminal(terminalID string) error
-	InputText(terminalID string, text string) error
-	SendKey(terminalID string, key string, modifiers []string) error
 	ListWindows() ([]ghostty.WindowRef, error)
 	ListTabs(windowID string) ([]ghostty.TabRef, error)
 	ListTerminals(tabID string) ([]ghostty.TerminalRef, error)
@@ -40,6 +34,7 @@ type GhosttyClient interface {
 
 type TmuxClient interface {
 	HasSession(name string) (bool, error)
+	ListSessions() ([]string, error)
 	NewSession(name string) error
 	KillSession(name string) error
 	SendKeys(target string, text string) error
@@ -52,11 +47,18 @@ type TmuxClient interface {
 
 type RemoteClient interface {
 	SearchTarget(query string) ([]remote.TargetMatch, error)
+	ConnectTarget(localTarget string) (remote.ConnectedProvider, error)
 	AttachTarget(localTarget string, query string) (remote.ResolvedTarget, error)
 	EnsureRemoteSession(localTarget string, remoteSession string) error
 	Reconnect(localTarget string) error
 	DetectStage(text string) model.PaneStage
 }
+
+const (
+	observeTickInterval      = 500 * time.Millisecond
+	observeGCInterval        = 30 * time.Second
+	managedTmuxSessionPrefix = "tg-pane-"
+)
 
 type Service struct {
 	mu           sync.Mutex
@@ -70,7 +72,7 @@ type Service struct {
 	idleTimeout  time.Duration
 	shutdown     func()
 	lastObserved map[string]time.Time
-	probeCurrent func(terminalID string) (currentTerminalProbe, error)
+	lastGCAt     time.Time
 }
 
 type WorkspaceCreateResult struct {
@@ -92,22 +94,12 @@ type AttachResult struct {
 	Target remote.ResolvedTarget `json:"target"`
 }
 
-type CurrentFocusInspection struct {
-	GhosttyWindowID   string `json:"ghostty_window_id"`
-	GhosttyTabID      string `json:"ghostty_tab_id"`
-	GhosttyTerminalID string `json:"ghostty_terminal_id"`
-	TerminalName      string `json:"terminal_name"`
-	WorkingDirectory  string `json:"working_directory"`
-	InsideTmux        bool   `json:"inside_tmux"`
-	LocalTmuxSession  string `json:"local_tmux_session,omitempty"`
-	LocalTmuxTarget   string `json:"local_tmux_target,omitempty"`
-	LocalTmuxPane     string `json:"local_tmux_pane,omitempty"`
-	Managed           bool   `json:"managed"`
-	ManagedPaneID     string `json:"managed_pane_id,omitempty"`
-	ManagedWorkspace  string `json:"managed_workspace_id,omitempty"`
-	Adoptable         bool   `json:"adoptable"`
-	Bootstrappable    bool   `json:"bootstrappable"`
-	Reason            string `json:"reason,omitempty"`
+type ConnectResult struct {
+	Pane              model.Pane        `json:"pane"`
+	Provider          string            `json:"provider"`
+	Stage             model.PaneStage   `json:"stage"`
+	StageTrace        []model.PaneStage `json:"stage_trace"`
+	ReadyForUserInput bool              `json:"ready_for_user_input"`
 }
 
 type Empty struct{}
@@ -116,19 +108,8 @@ type workspaceCloseRequest struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
-type workspaceSplitCurrentRequest struct {
-	Direction string `json:"direction"`
-	Claim     string `json:"claim,omitempty"`
-}
-
 type paneIDRequest struct {
 	PaneID string `json:"pane_id"`
-}
-
-type paneSplitRequest struct {
-	PaneID    string `json:"pane_id"`
-	Direction string `json:"direction"`
-	Claim     string `json:"claim,omitempty"`
 }
 
 type hostAttachRequest struct {
@@ -156,14 +137,6 @@ type downRequest struct {
 	Force bool `json:"force"`
 }
 
-type currentTerminalProbe struct {
-	InsideTmux    bool   `json:"inside_tmux"`
-	TmuxSession   string `json:"tmux_session,omitempty"`
-	TmuxPane      string `json:"tmux_pane,omitempty"`
-	RemoteShell   bool   `json:"remote_shell,omitempty"`
-	TmuxAvailable bool   `json:"tmux_available,omitempty"`
-}
-
 func NewService(statePath string, actionsPath string, idleTimeout time.Duration, log *logx.Logger, ghosttyClient GhosttyClient, tmuxClient TmuxClient, remoteClient RemoteClient) (*Service, error) {
 	stateStore := store.New(statePath, actionsPath)
 	state, err := stateStore.LoadState()
@@ -188,7 +161,11 @@ func NewService(statePath string, actionsPath string, idleTimeout time.Duration,
 		idleTimeout:  idleTimeout,
 		lastObserved: map[string]time.Time{},
 	}
-	service.probeCurrent = service.probeCurrentTerminal
+	service.syncStatusLocked()
+	service.gcLocked(now)
+	if err := service.saveLocked(); err != nil {
+		return nil, err
+	}
 	return service, nil
 }
 
@@ -216,17 +193,6 @@ func (s *Service) HandleRPC(ctx context.Context, method string, params json.RawM
 		}
 	case "workspace.create":
 		result, err = s.CreateWorkspace()
-	case "workspace.inspect_current":
-		result, err = s.InspectCurrent()
-	case "workspace.bootstrap_current":
-		result, err = s.BootstrapCurrent()
-	case "workspace.split_current":
-		var req workspaceSplitCurrentRequest
-		if err = decodeParams(params, &req); err == nil {
-			result, err = s.SplitCurrent(req.Direction, req.Claim)
-		}
-	case "workspace.adopt_current":
-		result, err = s.AdoptCurrent()
 	case "workspace.reconcile":
 		result, err = s.Reconcile()
 	case "workspace.close":
@@ -248,10 +214,10 @@ func (s *Service) HandleRPC(ctx context.Context, method string, params json.RawM
 		if err = decodeParams(params, &req); err == nil {
 			result, err = s.SnapshotPane(req.PaneID)
 		}
-	case "pane.split":
-		var req paneSplitRequest
+	case "host.connect":
+		var req paneIDRequest
 		if err = decodeParams(params, &req); err == nil {
-			result, err = s.SplitPane(req.PaneID, req.Direction, req.Claim)
+			result, err = s.ConnectHost(req.PaneID)
 		}
 	case "host.attach":
 		var req hostAttachRequest
@@ -311,6 +277,7 @@ func (s *Service) Status() (model.BrokerStatus, error) {
 	defer s.mu.Unlock()
 	s.touchLocked()
 	s.syncStatusLocked()
+	s.gcLocked(time.Now().UTC())
 	return s.statusLocked(), s.saveLocked()
 }
 
@@ -352,138 +319,6 @@ func (s *Service) CreateWorkspace() (WorkspaceCreateResult, error) {
 	return WorkspaceCreateResult{Workspace: workspace, Pane: s.state.Panes[pane.ID]}, nil
 }
 
-func (s *Service) InspectCurrent() (CurrentFocusInspection, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.touchLocked()
-
-	inspection, err := s.inspectCurrentLocked()
-	if err != nil {
-		return CurrentFocusInspection{}, err
-	}
-	return inspection, s.saveLocked()
-}
-
-func (s *Service) AdoptCurrent() (WorkspaceCreateResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.touchLocked()
-
-	inspection, err := s.inspectCurrentLocked()
-	if err != nil {
-		return WorkspaceCreateResult{}, err
-	}
-	if !inspection.Adoptable {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("%s", inspection.Reason))
-	}
-	return s.createCurrentWindowWorkspaceLocked(inspection, false)
-}
-
-func (s *Service) BootstrapCurrent() (WorkspaceCreateResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.touchLocked()
-
-	inspection, err := s.inspectCurrentLocked()
-	if err != nil {
-		return WorkspaceCreateResult{}, err
-	}
-	switch {
-	case inspection.Adoptable:
-		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("current terminal is already running inside tmux; use workspace adopt-current"))
-	case inspection.Managed:
-		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("%s", inspection.Reason))
-	case !inspection.Bootstrappable:
-		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("%s", inspection.Reason))
-	}
-
-	sessionName := fmt.Sprintf("tg-current-%d", time.Now().UnixNano())
-	if err := s.tmux.NewSession(sessionName); err != nil {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonTmuxUnavailable, err)
-	}
-
-	attachCommand := s.tmux.AttachCommand(sessionName)
-	if err := s.ghostty.InputText(inspection.GhosttyTerminalID, attachCommand); err != nil {
-		_ = s.tmux.KillSession(sessionName)
-		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, fmt.Errorf("failed to send bootstrap tmux attach to current terminal: %w", err))
-	}
-	if err := s.ghostty.SendKey(inspection.GhosttyTerminalID, "enter", nil); err != nil {
-		_ = s.tmux.KillSession(sessionName)
-		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, fmt.Errorf("failed to execute bootstrap tmux attach in current terminal: %w", err))
-	}
-
-	bootstrapped, err := s.waitForBootstrappedCurrentLocked(inspection.GhosttyTerminalID, sessionName)
-	if err != nil {
-		if latest, latestErr := s.inspectCurrentLocked(); latestErr == nil && latest.GhosttyTerminalID == inspection.GhosttyTerminalID && !latest.InsideTmux {
-			_ = s.tmux.KillSession(sessionName)
-		}
-		return WorkspaceCreateResult{}, err
-	}
-
-	return s.createCurrentWindowWorkspaceLocked(bootstrapped, true)
-}
-
-func (s *Service) SplitCurrent(direction string, claim string) (WorkspaceCreateResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.touchLocked()
-
-	if err := s.ghostty.RequireAvailable(); err != nil {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, err)
-	}
-
-	focus, err := s.ghostty.InspectFocused()
-	if err != nil {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, fmt.Errorf("could not resolve current Ghostty focus: %w", err))
-	}
-
-	if managed := s.findPaneByTerminalLocked(focus.Terminal.ID); managed != nil {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("current terminal is already managed by pane %s; use pane split instead", managed.ID))
-	}
-
-	workspace := model.NewWorkspace()
-	workspace.LaunchMode = model.WorkspaceLaunchModeCurrentWindow
-	pane := model.NewPane(workspace.ID)
-	if claimValue := strings.TrimSpace(claim); claimValue != "" {
-		controller := model.Controller(strings.ToLower(claimValue))
-		if controller != model.ControllerAgent && controller != model.ControllerUser {
-			return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("unsupported claim actor: %s", claim))
-		}
-		pane.Controller = controller
-	}
-
-	if err := s.tmux.NewSession(pane.LocalTmuxSession); err != nil {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonTmuxUnavailable, err)
-	}
-
-	terminalRef, err := s.ghostty.SplitTerminal(focus.Terminal.ID, direction, s.launchCommandForPane(pane))
-	if err != nil {
-		_ = s.tmux.KillSession(pane.LocalTmuxSession)
-		return WorkspaceCreateResult{}, newError(rpc.ReasonGhosttyUnavailable, err)
-	}
-
-	workspace.GhosttyWindowID = focus.Window.ID
-	workspace.GhosttyTabID = focus.Tab.ID
-	workspace.PaneIDs = []string{pane.ID}
-	pane.GhosttyTerminalID = terminalRef.ID
-
-	s.state.Workspaces[workspace.ID] = workspace
-	s.state.Panes[pane.ID] = pane
-	if _, err := s.refreshPaneLocked(pane.ID); err != nil {
-		delete(s.state.Panes, pane.ID)
-		delete(s.state.Workspaces, workspace.ID)
-		_ = s.tmux.KillSession(pane.LocalTmuxSession)
-		return WorkspaceCreateResult{}, err
-	}
-	if err := s.saveLocked(); err != nil {
-		delete(s.state.Panes, pane.ID)
-		delete(s.state.Workspaces, workspace.ID)
-		_ = s.tmux.KillSession(pane.LocalTmuxSession)
-		return WorkspaceCreateResult{}, err
-	}
-	return WorkspaceCreateResult{Workspace: workspace, Pane: s.state.Panes[pane.ID]}, nil
-}
-
 func (s *Service) Reconcile() ([]model.Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -505,6 +340,7 @@ func (s *Service) Reconcile() ([]model.Workspace, error) {
 			s.state.Workspaces[workspaceID] = updated
 		}
 	}
+	s.gcLocked(time.Now().UTC())
 
 	if err := s.saveLocked(); err != nil {
 		return nil, err
@@ -522,7 +358,10 @@ func (s *Service) CloseWorkspace(workspaceID string) error {
 		return newError(rpc.ReasonInvalidState, fmt.Errorf("workspace not found: %s", workspaceID))
 	}
 	for _, paneID := range workspace.PaneIDs {
-		pane := s.state.Panes[paneID]
+		pane, ok := s.state.Panes[paneID]
+		if !ok {
+			continue
+		}
 		if pane.OwnsLocalTmux {
 			_ = s.tmux.KillSession(pane.LocalTmuxSession)
 		}
@@ -535,6 +374,7 @@ func (s *Service) CloseWorkspace(workspaceID string) error {
 	workspace.GhosttyWindowID = ""
 	workspace.GhosttyTabID = ""
 	s.state.Workspaces[workspace.ID] = workspace
+	s.gcLocked(time.Now().UTC())
 	return s.saveLocked()
 }
 
@@ -579,64 +419,41 @@ func (s *Service) SnapshotPane(paneID string) (model.PaneSnapshot, error) {
 	return toSnapshot(pane), nil
 }
 
-func (s *Service) SplitPane(paneID string, direction string, claim string) (model.Pane, error) {
+func (s *Service) ConnectHost(paneID string) (ConnectResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.touchLocked()
 
-	anchorPane, err := s.paneLocked(paneID)
+	pane, err := s.paneLocked(paneID)
 	if err != nil {
-		return model.Pane{}, err
+		return ConnectResult{}, err
 	}
-	if anchorPane.GhosttyTerminalID == "" {
-		return model.Pane{}, newError(rpc.ReasonInvalidState, fmt.Errorf("pane %s has no ghostty terminal", paneID))
-	}
-
-	workspace, ok := s.state.Workspaces[anchorPane.WorkspaceID]
-	if !ok {
-		return model.Pane{}, newError(rpc.ReasonInvalidState, fmt.Errorf("workspace not found: %s", anchorPane.WorkspaceID))
-	}
-
-	newPane := model.NewPane(anchorPane.WorkspaceID)
-	newPane.OwnsLocalTmux = true
-	if claimValue := strings.TrimSpace(claim); claimValue != "" {
-		controller := model.Controller(strings.ToLower(claimValue))
-		if controller != model.ControllerAgent && controller != model.ControllerUser {
-			return model.Pane{}, newError(rpc.ReasonInvalidState, fmt.Errorf("unsupported claim actor: %s", claim))
-		}
-		newPane.Controller = controller
-	}
-
-	if err := s.tmux.NewSession(newPane.LocalTmuxSession); err != nil {
-		return model.Pane{}, newError(rpc.ReasonTmuxUnavailable, err)
-	}
-
-	terminalRef, err := s.ghostty.SplitTerminal(anchorPane.GhosttyTerminalID, direction, s.launchCommandForPane(newPane))
+	connected, err := s.remote.ConnectTarget(pane.LocalTmuxTarget)
 	if err != nil {
-		_ = s.tmux.KillSession(newPane.LocalTmuxSession)
-		return model.Pane{}, newError(rpc.ReasonGhosttyUnavailable, err)
+		return ConnectResult{}, newError(rpc.ReasonRemoteAttachFailed, err)
 	}
-
-	newPane.GhosttyTerminalID = terminalRef.ID
-	workspace.PaneIDs = append(workspace.PaneIDs, newPane.ID)
-
-	s.state.Workspaces[workspace.ID] = workspace
-	s.state.Panes[newPane.ID] = newPane
-	if _, err := s.refreshPaneLocked(newPane.ID); err != nil {
-		delete(s.state.Panes, newPane.ID)
-		workspace.PaneIDs = workspace.PaneIDs[:len(workspace.PaneIDs)-1]
-		s.state.Workspaces[workspace.ID] = workspace
-		_ = s.tmux.KillSession(newPane.LocalTmuxSession)
-		return model.Pane{}, err
+	pane.RemoteProvider = connected.Provider
+	pane.HostQuery = ""
+	pane.HostResolvedName = ""
+	pane.RemoteTmuxSession = ""
+	pane.RemoteTmuxStatus = ""
+	pane.RemoteTmuxDetail = ""
+	pane.Mode = model.ModeRunning
+	s.state.Panes[pane.ID] = pane
+	pane, err = s.refreshPaneLocked(pane.ID)
+	if err != nil {
+		return ConnectResult{}, err
 	}
 	if err := s.saveLocked(); err != nil {
-		delete(s.state.Panes, newPane.ID)
-		workspace.PaneIDs = workspace.PaneIDs[:len(workspace.PaneIDs)-1]
-		s.state.Workspaces[workspace.ID] = workspace
-		_ = s.tmux.KillSession(newPane.LocalTmuxSession)
-		return model.Pane{}, err
+		return ConnectResult{}, err
 	}
-	return s.state.Panes[newPane.ID], nil
+	return ConnectResult{
+		Pane:              pane,
+		Provider:          connected.Provider,
+		Stage:             connected.Stage,
+		StageTrace:        connected.StageTrace,
+		ReadyForUserInput: connected.ReadyForUserInput,
+	}, nil
 }
 
 func (s *Service) AttachHost(paneID string, query string) (AttachResult, error) {
@@ -855,7 +672,7 @@ func (s *Service) Shutdown(force bool) error {
 }
 
 func (s *Service) observeLoop(ctx context.Context) {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(observeTickInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -901,11 +718,159 @@ func (s *Service) pollOnce(now time.Time) {
 		}
 	}
 
+	if s.lastGCAt.IsZero() || now.Sub(s.lastGCAt) >= observeGCInterval {
+		if s.gcLocked(now) {
+			changed = true
+		}
+	}
 	if changed {
 		_ = s.saveLocked()
 	}
 	if s.shouldAutoExitLocked(now) && s.shutdown != nil {
 		go s.shutdown()
+	}
+}
+
+func (s *Service) gcLocked(now time.Time) bool {
+	prunedPanes := map[string]struct{}{}
+	prunedWorkspaces := map[string]struct{}{}
+	healthyWorkspaces := map[string]bool{}
+
+	for workspaceID, workspace := range s.state.Workspaces {
+		if workspace.Status == model.WorkspaceClosed || len(workspace.PaneIDs) == 0 {
+			prunedWorkspaces[workspaceID] = struct{}{}
+			continue
+		}
+		healthyWorkspaces[workspaceID] = s.workspaceHealthyLocked(workspace)
+	}
+	for paneID, pane := range s.state.Panes {
+		workspace, ok := s.state.Workspaces[pane.WorkspaceID]
+		if !ok {
+			prunedPanes[paneID] = struct{}{}
+			continue
+		}
+		if _, prune := prunedWorkspaces[workspace.ID]; prune {
+			prunedPanes[paneID] = struct{}{}
+			continue
+		}
+		if pane.Mode == model.ModeDisconnected && !healthyWorkspaces[workspace.ID] {
+			prunedPanes[paneID] = struct{}{}
+		}
+	}
+
+	changed := false
+	if len(prunedPanes) > 0 {
+		for paneID := range prunedPanes {
+			pane, ok := s.state.Panes[paneID]
+			if !ok {
+				continue
+			}
+			if pane.OwnsLocalTmux {
+				s.killSessionBestEffortLocked(pane.LocalTmuxSession, "broker.gc.pruned_pane_session", paneID)
+			}
+			delete(s.state.Panes, paneID)
+			delete(s.lastObserved, paneID)
+			changed = true
+		}
+	}
+
+	for workspaceID, workspace := range s.state.Workspaces {
+		if _, prune := prunedWorkspaces[workspaceID]; prune {
+			delete(s.state.Workspaces, workspaceID)
+			changed = true
+			continue
+		}
+		filteredPaneIDs := make([]string, 0, len(workspace.PaneIDs))
+		for _, paneID := range workspace.PaneIDs {
+			if _, ok := s.state.Panes[paneID]; ok {
+				filteredPaneIDs = append(filteredPaneIDs, paneID)
+			}
+		}
+		if len(filteredPaneIDs) == 0 {
+			delete(s.state.Workspaces, workspaceID)
+			changed = true
+			continue
+		}
+		if !slices.Equal(filteredPaneIDs, workspace.PaneIDs) {
+			workspace.PaneIDs = filteredPaneIDs
+			s.state.Workspaces[workspaceID] = workspace
+			changed = true
+		}
+	}
+
+	remainingPaneIDs := make(map[string]struct{}, len(s.state.Panes))
+	remainingManagedSessions := map[string]struct{}{}
+	for paneID, pane := range s.state.Panes {
+		remainingPaneIDs[paneID] = struct{}{}
+		if strings.HasPrefix(strings.TrimSpace(pane.LocalTmuxSession), managedTmuxSessionPrefix) {
+			remainingManagedSessions[pane.LocalTmuxSession] = struct{}{}
+		}
+	}
+	for paneID := range s.lastObserved {
+		if _, ok := remainingPaneIDs[paneID]; ok {
+			continue
+		}
+		delete(s.lastObserved, paneID)
+		changed = true
+	}
+	if len(s.actions) > 0 {
+		filteredActions := s.actions[:0]
+		for _, action := range s.actions {
+			if _, ok := remainingPaneIDs[action.PaneID]; ok {
+				filteredActions = append(filteredActions, action)
+				continue
+			}
+			changed = true
+		}
+		s.actions = filteredActions
+	}
+	for workspaceID := range s.state.Workspaces {
+		s.updateWorkspaceStatusLocked(workspaceID)
+	}
+
+	s.killOrphanManagedSessionsLocked(remainingManagedSessions)
+	s.lastGCAt = now
+	return changed
+}
+
+func (s *Service) killSessionBestEffortLocked(session string, msg string, paneID string) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return
+	}
+	if err := s.tmux.KillSession(session); err != nil && s.log != nil {
+		s.log.Error(msg, map[string]any{
+			"pane_id": paneID,
+			"session": session,
+			"error":   err.Error(),
+		})
+	}
+}
+
+func (s *Service) killOrphanManagedSessionsLocked(referenced map[string]struct{}) {
+	sessions, err := s.tmux.ListSessions()
+	if err != nil {
+		if s.log != nil {
+			s.log.Error("broker.gc.list_sessions_failed", map[string]any{
+				"error": err.Error(),
+			})
+		}
+		return
+	}
+	seen := map[string]struct{}{}
+	for _, session := range sessions {
+		session = strings.TrimSpace(session)
+		if session == "" || !strings.HasPrefix(session, managedTmuxSessionPrefix) {
+			continue
+		}
+		if _, ok := referenced[session]; ok {
+			continue
+		}
+		if _, ok := seen[session]; ok {
+			continue
+		}
+		seen[session] = struct{}{}
+		s.killSessionBestEffortLocked(session, "broker.gc.orphan_session_kill_failed", "")
 	}
 }
 
@@ -1024,197 +989,9 @@ func (s *Service) rebuildWorkspaceLocked(workspaceID string) (model.Workspace, e
 	firstPane.GhosttyTerminalID = terminalRef.ID
 	firstPane.Mode = model.ModeIdle
 	s.state.Panes[firstPane.ID] = firstPane
-
-	anchorTerminalID := terminalRef.ID
-	directions := []string{"right", "down", "right", "down"}
-	for index, paneID := range workspace.PaneIDs[1:] {
-		pane := s.state.Panes[paneID]
-		if alive, _ := s.tmux.TargetAlive(pane.LocalTmuxTarget); !alive {
-			if pane.OwnsLocalTmux {
-				if err := s.tmux.NewSession(pane.LocalTmuxSession); err != nil {
-					return model.Workspace{}, newError(rpc.ReasonTmuxUnavailable, err)
-				}
-				pane.LocalTmuxTarget = pane.LocalTmuxSession + ":0.0"
-			} else {
-				return model.Workspace{}, newError(rpc.ReasonInvalidState, fmt.Errorf("pane %s no longer has a live tmux target", pane.ID))
-			}
-		}
-		direction := directions[index%len(directions)]
-		terminal, err := s.ghostty.SplitTerminal(anchorTerminalID, direction, s.launchCommandForPane(pane))
-		if err != nil {
-			return model.Workspace{}, newError(rpc.ReasonGhosttyUnavailable, err)
-		}
-		pane.GhosttyTerminalID = terminal.ID
-		pane.Mode = model.ModeIdle
-		s.state.Panes[pane.ID] = pane
-	}
 	workspace.Status = model.WorkspaceActive
 	s.state.Workspaces[workspace.ID] = workspace
 	return workspace, nil
-}
-
-func (s *Service) createCurrentWindowWorkspaceLocked(inspection CurrentFocusInspection, ownsLocalTmux bool) (WorkspaceCreateResult, error) {
-	workspace := model.NewWorkspace()
-	workspace.LaunchMode = model.WorkspaceLaunchModeCurrentWindow
-	pane := model.NewPane(workspace.ID)
-	pane.GhosttyTerminalID = inspection.GhosttyTerminalID
-	pane.LocalTmuxSession = inspection.LocalTmuxSession
-	pane.LocalTmuxTarget = coalesce(inspection.LocalTmuxTarget, inspection.LocalTmuxPane, inspection.LocalTmuxSession)
-	pane.OwnsLocalTmux = ownsLocalTmux
-
-	if alive, err := s.tmux.TargetAlive(pane.LocalTmuxTarget); err != nil {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonTmuxUnavailable, err)
-	} else if !alive {
-		return WorkspaceCreateResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("current tmux pane is no longer available"))
-	}
-
-	workspace.GhosttyWindowID = inspection.GhosttyWindowID
-	workspace.GhosttyTabID = inspection.GhosttyTabID
-	workspace.PaneIDs = []string{pane.ID}
-
-	s.state.Workspaces[workspace.ID] = workspace
-	s.state.Panes[pane.ID] = pane
-	if _, err := s.refreshPaneLocked(pane.ID); err != nil {
-		delete(s.state.Panes, pane.ID)
-		delete(s.state.Workspaces, workspace.ID)
-		return WorkspaceCreateResult{}, err
-	}
-	if err := s.saveLocked(); err != nil {
-		delete(s.state.Panes, pane.ID)
-		delete(s.state.Workspaces, workspace.ID)
-		return WorkspaceCreateResult{}, err
-	}
-	return WorkspaceCreateResult{Workspace: workspace, Pane: s.state.Panes[pane.ID]}, nil
-}
-
-func (s *Service) inspectCurrentLocked() (CurrentFocusInspection, error) {
-	if err := s.ghostty.RequireAvailable(); err != nil {
-		return CurrentFocusInspection{}, newError(rpc.ReasonGhosttyUnavailable, err)
-	}
-
-	focus, err := s.ghostty.InspectFocused()
-	if err != nil {
-		return CurrentFocusInspection{}, newError(rpc.ReasonGhosttyUnavailable, fmt.Errorf("could not resolve current Ghostty focus: %w", err))
-	}
-
-	inspection := CurrentFocusInspection{
-		GhosttyWindowID:   focus.Window.ID,
-		GhosttyTabID:      focus.Tab.ID,
-		GhosttyTerminalID: focus.Terminal.ID,
-		TerminalName:      focus.Terminal.Name,
-		WorkingDirectory:  focus.Terminal.WorkingDirectory,
-	}
-
-	if managed := s.findPaneByTerminalLocked(focus.Terminal.ID); managed != nil {
-		inspection.Managed = true
-		inspection.ManagedPaneID = managed.ID
-		inspection.ManagedWorkspace = managed.WorkspaceID
-		inspection.InsideTmux = true
-		inspection.LocalTmuxSession = managed.LocalTmuxSession
-		inspection.LocalTmuxTarget = managed.LocalTmuxTarget
-		inspection.LocalTmuxPane = managed.LocalTmuxTarget
-		inspection.Adoptable = false
-		inspection.Reason = fmt.Sprintf("current terminal is already managed by pane %s", managed.ID)
-		return inspection, nil
-	}
-
-	probe, err := s.probeCurrent(focus.Terminal.ID)
-	focusAfter, focusErr := s.ghostty.InspectFocused()
-	if focusErr != nil {
-		return CurrentFocusInspection{}, newError(rpc.ReasonGhosttyUnavailable, fmt.Errorf("could not re-check current Ghostty focus after probe: %w", focusErr))
-	}
-	if !sameFocusContext(focus, focusAfter) {
-		inspection.Adoptable = false
-		inspection.Reason = "focused terminal changed during probe"
-		return inspection, nil
-	}
-	if err != nil {
-		inspection.Adoptable = false
-		inspection.Reason = err.Error()
-		return inspection, nil
-	}
-
-	inspection.InsideTmux = probe.InsideTmux
-	inspection.LocalTmuxSession = probe.TmuxSession
-	inspection.LocalTmuxPane = probe.TmuxPane
-	inspection.LocalTmuxTarget = coalesce(probe.TmuxPane, probe.TmuxSession)
-	if !probe.InsideTmux {
-		switch {
-		case probe.RemoteShell:
-			inspection.Adoptable = false
-			inspection.Bootstrappable = false
-			inspection.Reason = "current terminal appears to be a remote shell; bootstrap-current only supports a local shell"
-		case !probe.TmuxAvailable:
-			inspection.Adoptable = false
-			inspection.Bootstrappable = false
-			inspection.Reason = "tmux is not available in the current shell; install tmux or update PATH first"
-		default:
-			inspection.Adoptable = false
-			inspection.Bootstrappable = true
-			inspection.Reason = "current terminal is a local shell outside tmux; run workspace bootstrap-current"
-		}
-		return inspection, nil
-	}
-
-	if managed := s.findPaneBySessionLocked(probe.TmuxSession); managed != nil {
-		inspection.Managed = true
-		inspection.ManagedPaneID = managed.ID
-		inspection.ManagedWorkspace = managed.WorkspaceID
-		inspection.Adoptable = false
-		inspection.Reason = fmt.Sprintf("tmux session %s is already managed by pane %s", probe.TmuxSession, managed.ID)
-		return inspection, nil
-	}
-
-	inspection.Adoptable = true
-	return inspection, nil
-}
-
-func (s *Service) waitForBootstrappedCurrentLocked(terminalID string, sessionName string) (CurrentFocusInspection, error) {
-	deadline := time.Now().Add(4 * time.Second)
-	lastReason := ""
-	for time.Now().Before(deadline) {
-		inspection, err := s.inspectCurrentLocked()
-		if err == nil && inspection.GhosttyTerminalID == terminalID && inspection.InsideTmux && inspection.LocalTmuxSession == sessionName && inspection.Adoptable {
-			return inspection, nil
-		}
-		if err == nil {
-			lastReason = inspection.Reason
-			if inspection.Reason == "focused terminal changed during probe" {
-				return CurrentFocusInspection{}, newError(rpc.ReasonInvalidState, fmt.Errorf("%s", inspection.Reason))
-			}
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
-	if strings.TrimSpace(lastReason) == "" {
-		lastReason = "current terminal did not enter the requested tmux session"
-	}
-	return CurrentFocusInspection{}, newError(rpc.ReasonInvalidState, fmt.Errorf("bootstrap-current did not reach a managed tmux shell: %s", lastReason))
-}
-
-func sameFocusContext(left ghostty.FocusContext, right ghostty.FocusContext) bool {
-	return left.Window.ID == right.Window.ID &&
-		left.Tab.ID == right.Tab.ID &&
-		left.Terminal.ID == right.Terminal.ID
-}
-
-func (s *Service) findPaneByTerminalLocked(terminalID string) *model.Pane {
-	for _, pane := range s.state.Panes {
-		if pane.GhosttyTerminalID == terminalID {
-			copy := pane
-			return &copy
-		}
-	}
-	return nil
-}
-
-func (s *Service) findPaneBySessionLocked(session string) *model.Pane {
-	for _, pane := range s.state.Panes {
-		if pane.LocalTmuxSession == session {
-			copy := pane
-			return &copy
-		}
-	}
-	return nil
 }
 
 func (s *Service) paneLocked(paneID string) (model.Pane, error) {
@@ -1337,8 +1114,8 @@ func (s *Service) updateWorkspaceStatusLocked(workspaceID string) {
 		status = model.WorkspaceDegraded
 	}
 	for _, paneID := range workspace.PaneIDs {
-		pane := s.state.Panes[paneID]
-		if pane.Mode == model.ModeDisconnected {
+		pane, ok := s.state.Panes[paneID]
+		if !ok || pane.Mode == model.ModeDisconnected {
 			status = model.WorkspaceDegraded
 			break
 		}
@@ -1455,7 +1232,7 @@ func (s *Service) workspaceHealthyLocked(workspace model.Workspace) bool {
 	}
 	for _, paneID := range workspace.PaneIDs {
 		pane, ok := s.state.Panes[paneID]
-		if !ok || strings.TrimSpace(pane.GhosttyTerminalID) == "" {
+		if !ok || strings.TrimSpace(pane.GhosttyTerminalID) == "" || pane.Mode == model.ModeDisconnected {
 			return false
 		}
 	}
@@ -1463,7 +1240,7 @@ func (s *Service) workspaceHealthyLocked(workspace model.Workspace) bool {
 }
 
 func (s *Service) workspaceAllowsRebuildLocked(workspace model.Workspace) bool {
-	return s.workspaceLaunchModeLocked(workspace) == model.WorkspaceLaunchModeNewWindow
+	return s.workspaceLaunchModeLocked(workspace) == model.WorkspaceLaunchModeNewWindow && len(workspace.PaneIDs) <= 1
 }
 
 func (s *Service) workspaceLaunchModeLocked(workspace model.Workspace) model.WorkspaceLaunchMode {
@@ -1476,61 +1253,6 @@ func (s *Service) workspaceLaunchModeLocked(workspace model.Workspace) model.Wor
 		}
 	}
 	return model.WorkspaceLaunchModeNewWindow
-}
-
-func (s *Service) probeCurrentTerminal(terminalID string) (currentTerminalProbe, error) {
-	probeID := fmt.Sprintf("%d", time.Now().UnixNano())
-	probePath := filepath.Join("/tmp", "tmux-ghostty-probe-"+probeID+".json")
-	scriptPath := filepath.Join("/tmp", "tmux-ghostty-probe-"+probeID+".sh")
-	_ = os.Remove(probePath)
-	_ = os.Remove(scriptPath)
-	defer os.Remove(probePath)
-	defer os.Remove(scriptPath)
-
-	script := `#!/bin/sh
-set -eu
-remote_shell=false
-if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ] || [ -n "${SSH_TTY:-}" ]; then
-  remote_shell=true
-fi
-tmux_available=false
-if command -v tmux >/dev/null 2>&1; then
-  tmux_available=true
-fi
-if [ -n "${TMUX:-}" ]; then
-  tmux_session=$(tmux display-message -p '#{session_name}')
-  tmux_pane=$(tmux display-message -p '#{pane_id}')
-  printf '{"inside_tmux":true,"tmux_session":"%s","tmux_pane":"%s","remote_shell":%s,"tmux_available":%s}\n' "$tmux_session" "$tmux_pane" "$remote_shell" "$tmux_available" > ` + execx.ShellQuote(probePath) + `
-else
-  printf '{"inside_tmux":false,"remote_shell":%s,"tmux_available":%s}\n' "$remote_shell" "$tmux_available" > ` + execx.ShellQuote(probePath) + `
-fi
-printf '\033[1A\033[2K\r' > /dev/tty 2>/dev/null || true
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
-		return currentTerminalProbe{}, fmt.Errorf("failed to prepare current terminal tmux probe: %w", err)
-	}
-
-	command := " " + execx.ShellQuote(scriptPath)
-	if err := s.ghostty.InputText(terminalID, command); err != nil {
-		return currentTerminalProbe{}, fmt.Errorf("failed to send tmux probe to current terminal: %w", err)
-	}
-	if err := s.ghostty.SendKey(terminalID, "enter", nil); err != nil {
-		return currentTerminalProbe{}, fmt.Errorf("failed to execute tmux probe in current terminal: %w", err)
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		buf, err := os.ReadFile(probePath)
-		if err == nil {
-			var probe currentTerminalProbe
-			if err := json.Unmarshal(buf, &probe); err != nil {
-				return currentTerminalProbe{}, fmt.Errorf("current terminal returned an unreadable tmux probe result: %w", err)
-			}
-			return probe, nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return currentTerminalProbe{}, fmt.Errorf("current terminal did not respond to the local tmux probe; ensure the focused shell is local and idle")
 }
 
 func inferPaneStage(pane model.Pane, text string, currentCommand string) model.PaneStage {

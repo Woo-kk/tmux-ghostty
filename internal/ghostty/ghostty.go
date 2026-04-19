@@ -38,12 +38,6 @@ type TerminalRef struct {
 	WorkingDirectory string `json:"working_directory"`
 }
 
-type FocusContext struct {
-	Window   WindowRef   `json:"window"`
-	Tab      TabRef      `json:"tab"`
-	Terminal TerminalRef `json:"terminal"`
-}
-
 type Client struct {
 	runner *execx.Runner
 }
@@ -158,109 +152,11 @@ end tell
 		nil
 }
 
-func (c *Client) SplitTerminal(terminalID string, direction string, initialCommand string) (TerminalRef, error) {
-	dir := strings.ToLower(strings.TrimSpace(direction))
-	switch dir {
-	case "right", "left", "down", "up":
-	default:
-		return TerminalRef{}, fmt.Errorf("unsupported split direction: %q", direction)
-	}
-	output, err := c.runScript(withHelpers(`
-tell application id "` + appBundleID + `"
-  set termRef to first terminal whose id is "` + appleScriptQuote(terminalID) + `"
-  set cfg to new surface configuration
-  set command of cfg to "` + appleScriptQuote(initialCommand) + `"
-  set wait after command of cfg to true
-  set newTerm to split termRef direction ` + dir + ` with configuration cfg
-  set cwd to ""
-  try
-    set cwd to working directory of newTerm
-  end try
-  return my joinFields({id of newTerm, name of newTerm, cwd})
-end tell
-`))
-	if err != nil {
-		return TerminalRef{}, err
-	}
-	fields := strings.Split(output, fieldSep)
-	if len(fields) != 3 {
-		return TerminalRef{}, fmt.Errorf("unexpected ghostty response for split: %q", output)
-	}
-	return TerminalRef{
-		ID:               fields[0],
-		Name:             fields[1],
-		WorkingDirectory: fields[2],
-	}, nil
-}
-
-func (c *Client) InspectFocused() (FocusContext, error) {
-	output, err := c.runScript(withHelpers(`
-tell application id "` + appBundleID + `"
-  set win to front window
-  if win is missing value then error "no focused Ghostty window"
-  set tabRef to selected tab of win
-  set termRef to focused terminal of tabRef
-  set cwd to ""
-  try
-    set cwd to working directory of termRef
-  end try
-  return my joinFields({id of win, name of win, id of tabRef, name of tabRef, (index of tabRef) as text, my boolText(selected of tabRef), id of termRef, name of termRef, cwd})
-end tell
-`))
-	if err != nil {
-		return FocusContext{}, err
-	}
-	fields := strings.Split(output, fieldSep)
-	if len(fields) != 9 {
-		return FocusContext{}, fmt.Errorf("unexpected ghostty response for inspect focused: %q", output)
-	}
-	return FocusContext{
-		Window: WindowRef{
-			ID:            fields[0],
-			Name:          fields[1],
-			SelectedTabID: fields[2],
-		},
-		Tab: TabRef{
-			ID:                fields[2],
-			Name:              fields[3],
-			Index:             parseInt(fields[4]),
-			Selected:          fields[5] == "true",
-			FocusedTerminalID: fields[6],
-		},
-		Terminal: TerminalRef{
-			ID:               fields[6],
-			Name:             fields[7],
-			WorkingDirectory: fields[8],
-		},
-	}, nil
-}
-
 func (c *Client) FocusTerminal(terminalID string) error {
 	_, err := c.runScript(`
 tell application id "` + appBundleID + `"
   set termRef to first terminal whose id is "` + appleScriptQuote(terminalID) + `"
   focus termRef
-end tell
-`)
-	return err
-}
-
-func (c *Client) InputText(terminalID string, text string) error {
-	_, err := c.runScript(`
-tell application id "` + appBundleID + `"
-  set termRef to first terminal whose id is "` + appleScriptQuote(terminalID) + `"
-  input text "` + appleScriptQuote(text) + `" to termRef
-end tell
-`)
-	return err
-}
-
-func (c *Client) SendKey(terminalID string, key string, modifiers []string) error {
-	modifierValue := strings.Join(modifiers, ",")
-	_, err := c.runScript(`
-tell application id "` + appBundleID + `"
-  set termRef to first terminal whose id is "` + appleScriptQuote(terminalID) + `"
-  send key "` + appleScriptQuote(key) + `" modifiers "` + appleScriptQuote(modifierValue) + `" to termRef
 end tell
 `)
 	return err
