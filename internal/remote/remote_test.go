@@ -3,6 +3,7 @@ package remote
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -363,6 +364,35 @@ func newTestRemoteClient(t *testing.T, controller *fakeTmuxController) *Client {
 			runnerScript:  runnerPath,
 			remoteSession: defaultRemoteSession,
 		},
+	}
+}
+
+func TestBuildRemoteTmuxAttachCommandIsValidBash(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	cases := []struct {
+		name    string
+		session string
+		marker  string
+	}{
+		{name: "plain", session: "tmux-ghostty", marker: "__TMUX_GHOSTTY_REMOTE_TMUX__1__"},
+		{name: "session with spaces", session: "my session", marker: "__TMUX_GHOSTTY_REMOTE_TMUX__2__"},
+		{name: "session with quote", session: "o'brien", marker: "__TMUX_GHOSTTY_REMOTE_TMUX__3__"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := buildRemoteTmuxAttachCommand(tc.session, tc.marker)
+			syntaxCheck := exec.Command(bash, "-n", "-c", cmd)
+			output, err := syntaxCheck.CombinedOutput()
+			if err != nil {
+				t.Fatalf("bash -n rejected command: %v\ncommand: %s\noutput: %s", err, cmd, output)
+			}
+			if !strings.Contains(cmd, tc.marker) {
+				t.Fatalf("command missing marker: %s", cmd)
+			}
+		})
 	}
 }
 
