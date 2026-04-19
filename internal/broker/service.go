@@ -2,6 +2,9 @@ package broker
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -43,6 +46,7 @@ type TmuxClient interface {
 	NewSession(name string) error
 	KillSession(name string) error
 	SendKeys(target string, text string) error
+	SendBuffer(target string, bufferName string, data []byte) error
 	SendCtrlC(target string) error
 	CapturePane(target string, lines int) (string, error)
 	CurrentCommand(target string) (string, error)
@@ -150,6 +154,24 @@ type commandRequest struct {
 
 type actionRequest struct {
 	ActionID string `json:"action_id"`
+}
+
+type filePutRequest struct {
+	PaneID     string `json:"pane_id"`
+	LocalPath  string `json:"local_path"`
+	RemotePath string `json:"remote_path"`
+}
+
+// FilePutResult is returned by file.put RPC.
+// DoneMarker is echoed to the remote shell after the decode step finishes,
+// so callers can verify completion by matching the marker in a pane snapshot.
+type FilePutResult struct {
+	PaneID     string `json:"pane_id"`
+	LocalPath  string `json:"local_path"`
+	RemotePath string `json:"remote_path"`
+	Bytes      int64  `json:"bytes"`
+	DoneMarker string `json:"done_marker"`
+	TempPath   string `json:"temp_path"`
 }
 
 type downRequest struct {
@@ -300,6 +322,11 @@ func (s *Service) HandleRPC(ctx context.Context, method string, params json.RawM
 		}
 	case "actions.list":
 		result, err = s.ListActions()
+	case "file.put":
+		var req filePutRequest
+		if err = decodeParams(params, &req); err == nil {
+			result, err = s.PutFile(req.PaneID, req.LocalPath, req.RemotePath)
+		}
 	default:
 		err = newError(rpc.ReasonInvalidState, fmt.Errorf("unknown method: %s", method))
 	}
@@ -831,6 +858,113 @@ func (s *Service) ListActions() ([]model.Action, error) {
 	defer s.mu.Unlock()
 	s.touchLocked()
 	return model.SortedActions(s.actions), s.saveLocked()
+}
+
+// PutFile streams a local file into a remote shell pane via a base64 heredoc.
+//
+// The pane must be claimed by the agent and must not have a pending approval action.
+// This operation bypasses the risky-command approval flow because it is a
+// structured file-transfer primitive invoked directly by the agent, not a
+// free-form command.
+//
+// The caller should verify completion by polling pane snapshot for DoneMarker.
+func (s *Service) PutFile(paneID, localPath, remotePath string) (FilePutResult, error) {
+	if strings.TrimSpace(localPath) == "" {
+		return FilePutResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("local_path is required"))
+	}
+	if strings.TrimSpace(remotePath) == "" {
+		return FilePutResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("remote_path is required"))
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return FilePutResult{}, newError(rpc.ReasonInvalidState, fmt.Errorf("read local file: %w", err))
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touchLocked()
+
+	pane, err := s.refreshPaneLocked(paneID)
+	if err != nil {
+		return FilePutResult{}, err
+	}
+	if err := control.RequireAgentControl(pane); err != nil {
+		return FilePutResult{}, newError(rpc.ReasonNotController, err)
+	}
+	if pending := s.pendingActionForPaneLocked(paneID); pending != nil {
+		return FilePutResult{}, newError(rpc.ReasonApprovalRequired, fmt.Errorf("pane %s has a pending approval action", paneID))
+	}
+
+	marker, err := randomHex(8)
+	if err != nil {
+		return FilePutResult{}, newError(rpc.ReasonInvalidState, err)
+	}
+	tmpRemote := fmt.Sprintf("/tmp/tg-upload-%s.b64", marker)
+	heredocTag := fmt.Sprintf("TG_EOF_%s", marker)
+	doneMarker := fmt.Sprintf("TG_PUT_DONE_%s", marker)
+
+	target := pane.LocalTmuxTarget
+	encoded := base64.StdEncoding.EncodeToString(data)
+
+	// 1. Open heredoc to write base64 into a temp file.
+	startCmd := fmt.Sprintf("cat > %s << '%s'", execx.ShellQuote(tmpRemote), heredocTag)
+	if err := s.tmux.SendKeys(target, startCmd); err != nil {
+		return FilePutResult{}, newError(rpc.ReasonTmuxUnavailable, fmt.Errorf("open heredoc: %w", err))
+	}
+
+	// 2. Stream the entire base64 payload in one tmux paste.
+	//    `tmux send-keys -l` rejects arguments larger than ~16 KiB, which
+	//    would force us into tens of thousands of per-chunk subprocess calls
+	//    for anything larger than a few MB. `load-buffer` reads from stdin
+	//    (no arg-size limit) and `paste-buffer` dumps it into the pane in
+	//    one tmux invocation, so the upper bound on transfer time is the
+	//    pane's PTY drain rate rather than fork+exec overhead on our side.
+	bufferName := fmt.Sprintf("tg-file-put-%s", marker)
+	payload := append([]byte(encoded), '\n')
+	if err := s.tmux.SendBuffer(target, bufferName, payload); err != nil {
+		return FilePutResult{}, newError(rpc.ReasonTmuxUnavailable, fmt.Errorf("paste base64 payload: %w", err))
+	}
+
+	// 3. Close heredoc.
+	if err := s.tmux.SendKeys(target, heredocTag); err != nil {
+		return FilePutResult{}, newError(rpc.ReasonTmuxUnavailable, fmt.Errorf("close heredoc: %w", err))
+	}
+
+	// 4. Decode into final location and emit done marker.
+	finishCmd := fmt.Sprintf(
+		"base64 -d < %s > %s && rm -f %s && echo %s",
+		execx.ShellQuote(tmpRemote),
+		execx.ShellQuote(remotePath),
+		execx.ShellQuote(tmpRemote),
+		doneMarker,
+	)
+	if err := s.tmux.SendKeys(target, finishCmd); err != nil {
+		return FilePutResult{}, newError(rpc.ReasonTmuxUnavailable, fmt.Errorf("emit finish command: %w", err))
+	}
+
+	pane.Mode = model.ModeRunning
+	pane.LastActivityAt = time.Now().UTC()
+	s.state.Panes[pane.ID] = pane
+	if err := s.saveLocked(); err != nil {
+		return FilePutResult{}, err
+	}
+
+	return FilePutResult{
+		PaneID:     pane.ID,
+		LocalPath:  localPath,
+		RemotePath: remotePath,
+		Bytes:      int64(len(data)),
+		DoneMarker: doneMarker,
+		TempPath:   tmpRemote,
+	}, nil
+}
+
+func randomHex(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 func (s *Service) Shutdown(force bool) error {

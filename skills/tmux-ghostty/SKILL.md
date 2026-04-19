@@ -115,6 +115,14 @@ Keep that response concise and task-oriented.
 - Use `tmux-ghostty observe <pane-id>` when the pane should remain read-only from the agent side.
 - Use `tmux-ghostty interrupt <pane-id>` to stop the running foreground command.
 
+### 6.5. File transfer
+
+- Use `tmux-ghostty file put <pane-id> <local-path> <remote-path>` to stream a local file into the remote shell behind a pane.
+- The pane must be claimed by the agent first (`tmux-ghostty claim <pane-id> --actor agent`).
+- The CLI returns a JSON payload with a `done_marker` field. Poll `tmux-ghostty pane snapshot <pane-id>` until the marker appears to confirm the file reached its final location.
+- The transfer writes base64 into a temporary file under `/tmp/tg-upload-*.b64`, then decodes into `<remote-path>` and removes the temp file. If the pane is interrupted mid-transfer, that temp file may persist and should be cleaned up manually.
+- File transfer is a structured primitive and bypasses the risky-command approval flow. It does not run through `actions`, so only the agent controlling the pane can initiate it.
+
 ### 7. Commands, stages, and approvals
 
 - Prefer `tmux-ghostty command preview <pane-id> <command...>` before `command send` unless the risk is already obvious.
