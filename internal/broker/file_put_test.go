@@ -14,15 +14,23 @@ import (
 	"github.com/Woo-kk/tmux-ghostty/internal/model"
 )
 
-// recordingTmux captures all SendKeys calls and otherwise answers benignly.
+// recordingTmux captures all SendKeys / SendBuffer calls and otherwise
+// answers benignly.
 type recordingTmux struct {
-	mu       sync.Mutex
-	sendKeys []sendKeysCall
+	mu         sync.Mutex
+	sendKeys   []sendKeysCall
+	sendBuffer []sendBufferCall
 }
 
 type sendKeysCall struct {
 	target string
 	text   string
+}
+
+type sendBufferCall struct {
+	target     string
+	bufferName string
+	data       []byte
 }
 
 func (r *recordingTmux) HasSession(string) (bool, error) { return true, nil }
@@ -34,7 +42,16 @@ func (r *recordingTmux) SendKeys(target, text string) error {
 	r.sendKeys = append(r.sendKeys, sendKeysCall{target: target, text: text})
 	return nil
 }
-func (r *recordingTmux) SendCtrlC(string) error             { return nil }
+func (r *recordingTmux) SendBuffer(target, bufferName string, data []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Copy because callers may reuse the slice.
+	payload := make([]byte, len(data))
+	copy(payload, data)
+	r.sendBuffer = append(r.sendBuffer, sendBufferCall{target: target, bufferName: bufferName, data: payload})
+	return nil
+}
+func (r *recordingTmux) SendCtrlC(string) error                  { return nil }
 func (r *recordingTmux) CapturePane(string, int) (string, error) { return "", nil }
 func (r *recordingTmux) CurrentCommand(string) (string, error)   { return "", nil }
 func (r *recordingTmux) TargetAlive(string) (bool, error)        { return true, nil }
@@ -114,39 +131,40 @@ func TestPutFileStreamsBase64AndEmitsMarker(t *testing.T) {
 		t.Fatalf("temp path: got %q", result.TempPath)
 	}
 
-	calls := tmuxRecorder.sendKeys
-	if len(calls) < 4 {
-		t.Fatalf("expected at least 4 SendKeys calls (heredoc open, chunk, heredoc close, finish), got %d", len(calls))
+	keyCalls := tmuxRecorder.sendKeys
+	if len(keyCalls) < 3 {
+		t.Fatalf("expected at least 3 SendKeys calls (heredoc open, close tag, finish cmd), got %d", len(keyCalls))
+	}
+	bufCalls := tmuxRecorder.sendBuffer
+	if len(bufCalls) != 1 {
+		t.Fatalf("expected exactly 1 SendBuffer call, got %d", len(bufCalls))
 	}
 
-	// First call must open the heredoc with the same tag that closes it.
-	openCmd := calls[0].text
+	// First SendKeys must open the heredoc with the same tag that closes it.
+	openCmd := keyCalls[0].text
 	if !strings.Contains(openCmd, "cat > ") || !strings.Contains(openCmd, "<< '"+"TG_EOF_") {
 		t.Fatalf("open heredoc malformed: %q", openCmd)
 	}
 
-	// Reassemble all chunks between the opening heredoc command and the
-	// closing tag. They should concatenate to the base64 of the payload.
-	// Identify the closing tag by finding a line exactly matching the TG_EOF_*.
-	var chunks []string
-	closeIdx := -1
-	for i := 1; i < len(calls); i++ {
-		if strings.HasPrefix(calls[i].text, "TG_EOF_") && !strings.Contains(calls[i].text, " ") {
-			closeIdx = i
-			break
-		}
-		chunks = append(chunks, calls[i].text)
+	// The buffer payload should be base64(payload) followed by a trailing
+	// newline so the last line inside the heredoc is terminated.
+	wantBase64 := base64.StdEncoding.EncodeToString(payload) + "\n"
+	if string(bufCalls[0].data) != wantBase64 {
+		t.Fatalf("buffer payload mismatch.\n got: %q\nwant: %q", bufCalls[0].data, wantBase64)
 	}
-	if closeIdx < 0 {
-		t.Fatalf("did not find heredoc close tag in calls: %+v", calls)
-	}
-	gotBase64 := strings.Join(chunks, "")
-	wantBase64 := base64.StdEncoding.EncodeToString(payload)
-	if gotBase64 != wantBase64 {
-		t.Fatalf("streamed base64 mismatch.\n got: %q\nwant: %q", gotBase64, wantBase64)
+	if !strings.HasPrefix(bufCalls[0].bufferName, "tg-file-put-") {
+		t.Fatalf("buffer name should be namespaced per transfer, got %q", bufCalls[0].bufferName)
 	}
 
-	finishCmd := calls[closeIdx+1].text
+	// Second SendKeys should be the close tag.
+	closeCmd := keyCalls[1].text
+	if !strings.HasPrefix(closeCmd, "TG_EOF_") || strings.Contains(closeCmd, " ") {
+		t.Fatalf("close tag malformed: %q", closeCmd)
+	}
+
+	// Third SendKeys should be the finish command that decodes and emits the
+	// done marker.
+	finishCmd := keyCalls[2].text
 	if !strings.Contains(finishCmd, "base64 -d < ") || !strings.Contains(finishCmd, result.DoneMarker) {
 		t.Fatalf("finish command malformed: %q", finishCmd)
 	}

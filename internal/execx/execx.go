@@ -28,6 +28,65 @@ func NewRunner(log *logx.Logger) *Runner {
 	return &Runner{Log: log}
 }
 
+// RunStdin executes a command and pipes the given bytes as its standard input.
+// Used for commands like `tmux load-buffer -` where the payload is too large
+// for a command-line argument.
+func (r *Runner) RunStdin(ctx context.Context, timeout time.Duration, stdin []byte, name string, args ...string) (Result, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	start := time.Now()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = bytes.NewReader(stdin)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if r.Log != nil {
+		r.Log.Info("exec.start.stdin", map[string]any{
+			"cmd":        name,
+			"args":       args,
+			"stdin_size": len(stdin),
+		})
+	}
+
+	err := cmd.Run()
+	result := Result{
+		Stdout:   strings.TrimRight(stdout.String(), "\n"),
+		Stderr:   strings.TrimRight(stderr.String(), "\n"),
+		ExitCode: exitCode(err),
+		Duration: time.Since(start),
+	}
+
+	if r.Log != nil {
+		r.Log.Info("exec.done", map[string]any{
+			"cmd":       name,
+			"args":      args,
+			"exit_code": result.ExitCode,
+			"duration":  result.Duration.String(),
+		})
+	}
+
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return result, fmt.Errorf("command timed out: %s %s", name, strings.Join(args, " "))
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+				result.ExitCode = status.ExitStatus()
+			}
+			return result, fmt.Errorf("command failed: %s %s: %s", name, strings.Join(args, " "), strings.TrimSpace(result.Stderr))
+		}
+		return result, err
+	}
+	return result, nil
+}
+
 func (r *Runner) Run(ctx context.Context, timeout time.Duration, name string, args ...string) (Result, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc

@@ -46,6 +46,7 @@ type TmuxClient interface {
 	NewSession(name string) error
 	KillSession(name string) error
 	SendKeys(target string, text string) error
+	SendBuffer(target string, bufferName string, data []byte) error
 	SendCtrlC(target string) error
 	CapturePane(target string, lines int) (string, error)
 	CurrentCommand(target string) (string, error)
@@ -911,14 +912,17 @@ func (s *Service) PutFile(paneID, localPath, remotePath string) (FilePutResult, 
 		return FilePutResult{}, newError(rpc.ReasonTmuxUnavailable, fmt.Errorf("open heredoc: %w", err))
 	}
 
-	// 2. Stream base64 content in chunks. Each chunk becomes one line inside the
-	//    heredoc; base64 decoder tolerates embedded newlines.
-	const chunkSize = 4096
-	for i := 0; i < len(encoded); i += chunkSize {
-		end := min(i+chunkSize, len(encoded))
-		if err := s.tmux.SendKeys(target, encoded[i:end]); err != nil {
-			return FilePutResult{}, newError(rpc.ReasonTmuxUnavailable, fmt.Errorf("stream chunk at offset %d: %w", i, err))
-		}
+	// 2. Stream the entire base64 payload in one tmux paste.
+	//    `tmux send-keys -l` rejects arguments larger than ~16 KiB, which
+	//    would force us into tens of thousands of per-chunk subprocess calls
+	//    for anything larger than a few MB. `load-buffer` reads from stdin
+	//    (no arg-size limit) and `paste-buffer` dumps it into the pane in
+	//    one tmux invocation, so the upper bound on transfer time is the
+	//    pane's PTY drain rate rather than fork+exec overhead on our side.
+	bufferName := fmt.Sprintf("tg-file-put-%s", marker)
+	payload := append([]byte(encoded), '\n')
+	if err := s.tmux.SendBuffer(target, bufferName, payload); err != nil {
+		return FilePutResult{}, newError(rpc.ReasonTmuxUnavailable, fmt.Errorf("paste base64 payload: %w", err))
 	}
 
 	// 3. Close heredoc.

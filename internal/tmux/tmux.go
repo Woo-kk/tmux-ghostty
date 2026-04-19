@@ -11,6 +11,11 @@ import (
 
 const (
 	defaultTimeout = 10 * time.Second
+	// bufferTimeout is used for load-buffer/paste-buffer, which can block the
+	// client briefly while the buffer drains into the pane's PTY. For very
+	// large uploads (100 MB+) the paste can take a while, so we allow a much
+	// longer timeout than the default tmux operations.
+	bufferTimeout = 10 * time.Minute
 )
 
 type Client struct {
@@ -81,6 +86,28 @@ func (c *Client) SendText(target string, text string) error {
 	return err
 }
 
+// SendBuffer pastes arbitrary bytes into the pane via `tmux load-buffer` +
+// `tmux paste-buffer`. Unlike `SendText` (which uses `send-keys -l`), this
+// path is not subject to the ~16 KiB limit tmux imposes on send-keys
+// arguments, so it is the right primitive for streaming large payloads.
+//
+// The data is loaded into a uniquely-named buffer (so concurrent transfers
+// do not clobber each other) and then pasted into the target pane. `-d`
+// deletes the buffer after paste. SendBuffer does not append a trailing
+// Enter; the caller is responsible for sending one if the payload needs to
+// be terminated.
+func (c *Client) SendBuffer(target string, bufferName string, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	target = normalizeTarget(target)
+	if _, err := c.runStdin(bufferTimeout, data, "load-buffer", "-b", bufferName, "-"); err != nil {
+		return err
+	}
+	_, err := c.run(bufferTimeout, "paste-buffer", "-b", bufferName, "-d", "-t", target)
+	return err
+}
+
 func (c *Client) SendCtrlC(target string) error {
 	_, err := c.run(defaultTimeout, "send-keys", "-t", normalizeTarget(target), "C-c")
 	return err
@@ -125,6 +152,10 @@ func (c *Client) AttachCommand(session string) string {
 
 func (c *Client) run(timeout time.Duration, args ...string) (execx.Result, error) {
 	return c.runner.Run(context.Background(), timeout, "tmux", args...)
+}
+
+func (c *Client) runStdin(timeout time.Duration, stdin []byte, args ...string) (execx.Result, error) {
+	return c.runner.RunStdin(context.Background(), timeout, stdin, "tmux", args...)
 }
 
 func normalizeTarget(target string) string {
