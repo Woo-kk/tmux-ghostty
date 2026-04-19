@@ -666,21 +666,22 @@ func needsHostListConfirmation(text string) bool {
 func buildRemoteTmuxAttachCommand(remoteSession string, marker string) string {
 	quotedMarker := execx.ShellQuote(marker)
 	quotedSession := execx.ShellQuote(remoteSession)
-	return strings.Join([]string{
-		"printf '%s\\n' " + quotedMarker,
-		fmt.Sprintf("sleep %d", int(remoteTmuxProbeDelay/time.Second)),
-		"if ! command -v tmux >/dev/null 2>&1; then",
-		"printf '%s unavailable tmux not found\\n' " + quotedMarker,
-		"elif tmux has-session -t " + quotedSession + " 2>/dev/null || tmux new-session -d -s " + quotedSession + "; then",
-		"if tmux attach-session -t " + quotedSession + "; then",
-		":",
-		"else",
-		"status=$?; printf '%s failed attach-session exit=%s\\n' " + quotedMarker + " \"$status\"",
-		"fi",
-		"else",
-		"status=$?; printf '%s failed prepare-session exit=%s\\n' " + quotedMarker + " \"$status\"",
-		"fi",
-	}, "; ")
+	// Emit a bash-valid one-liner. Joining control keywords with "; " the
+	// naive way produces sequences like "then; printf" and "fi; else" which
+	// bash rejects with "syntax error near unexpected token ';'".
+	return fmt.Sprintf(
+		"printf '%%s\\n' %[1]s; "+
+			"sleep %[2]d; "+
+			"if ! command -v tmux >/dev/null 2>&1; then "+
+			"printf '%%s unavailable tmux not found\\n' %[1]s; "+
+			"elif tmux has-session -t %[3]s 2>/dev/null || tmux new-session -d -s %[3]s; then "+
+			"if tmux attach-session -t %[3]s; then :; "+
+			"else status=$?; printf '%%s failed attach-session exit=%%s\\n' %[1]s \"$status\"; fi; "+
+			"else status=$?; printf '%%s failed prepare-session exit=%%s\\n' %[1]s \"$status\"; fi",
+		quotedMarker,
+		int(remoteTmuxProbeDelay/time.Second),
+		quotedSession,
+	)
 }
 
 func parseRemoteTmuxStatus(text string, marker string) (model.RemoteTmuxStatus, string, bool) {

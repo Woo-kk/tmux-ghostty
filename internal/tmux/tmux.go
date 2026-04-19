@@ -33,8 +33,24 @@ func (c *Client) HasSession(name string) (bool, error) {
 }
 
 func (c *Client) NewSession(name string) error {
-	_, err := c.run(defaultTimeout, "new-session", "-d", "-A", "-s", name)
-	return err
+	if _, err := c.run(defaultTimeout, "new-session", "-d", "-A", "-s", name); err != nil {
+		return err
+	}
+	// Pin window/pane numbering to 0 for this session so the hardcoded ":0.0"
+	// target works even when the user's global tmux config sets base-index or
+	// pane-base-index to 1. set-option -w applies pane-base-index to every
+	// window in the session; move-window -r renumbers the already-created
+	// window so the initial index matches the updated base-index.
+	if _, err := c.run(defaultTimeout, "set-option", "-t", name, "base-index", "0"); err != nil {
+		return err
+	}
+	if _, err := c.run(defaultTimeout, "set-option", "-w", "-t", name, "pane-base-index", "0"); err != nil {
+		return err
+	}
+	if _, err := c.run(defaultTimeout, "move-window", "-r", "-t", name); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Client) KillSession(name string) error {
