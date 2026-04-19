@@ -108,6 +108,8 @@ func run(args []string) int {
 		return runDeny(ctx, paths, args[1:])
 	case "command":
 		return runCommand(ctx, paths, args[1:])
+	case "file":
+		return runFile(ctx, paths, args[1:])
 	default:
 		usage()
 		return 1
@@ -596,6 +598,37 @@ func runDeny(ctx context.Context, paths app.Paths, args []string) int {
 	}
 	printJSON(action)
 	return 0
+}
+
+func runFile(ctx context.Context, paths app.Paths, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: tmux-ghostty file put <pane-id> <local-path> <remote-path>")
+		return 1
+	}
+	client, err := app.EnsureBroker(ctx, paths)
+	if err != nil {
+		return printError(err)
+	}
+	switch args[0] {
+	case "put":
+		if len(args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: tmux-ghostty file put <pane-id> <local-path> <remote-path>")
+			return 1
+		}
+		var result any
+		if err := client.Call(ctx, "file.put", map[string]any{
+			"pane_id":     args[1],
+			"local_path":  args[2],
+			"remote_path": args[3],
+		}, &result); err != nil {
+			return printError(err)
+		}
+		printJSON(result)
+		return 0
+	default:
+		fmt.Fprintln(os.Stderr, "usage: tmux-ghostty file put <pane-id> <local-path> <remote-path>")
+		return 1
+	}
 }
 
 func runCommand(ctx context.Context, paths app.Paths, args []string) int {

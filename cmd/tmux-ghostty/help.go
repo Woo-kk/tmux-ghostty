@@ -81,6 +81,12 @@ var commandHelpGroups = []commandHelpGroup{
 			{Usage: "tmux-ghostty command send <pane-id> <command...>", Summary: "Send a command to the pane. Risky commands must be approved first."},
 		},
 	},
+	{
+		Name: "File Transfer",
+		Commands: []commandHelp{
+			{Usage: "tmux-ghostty file put <pane-id> <local-path> <remote-path>", Summary: "Stream a local file into the remote shell behind the pane via a base64 heredoc. The pane must be claimed by the agent. Returns a done_marker the caller can match in a pane snapshot to confirm completion."},
+		},
+	},
 }
 
 var helpNotes = []string{
