@@ -110,7 +110,7 @@ func (c *Client) CurrentCommand(target string) (string, error) {
 }
 
 func (c *Client) TargetAlive(target string) (bool, error) {
-	_, err := c.run(defaultTimeout, "display-message", "-p", "-t", normalizeTarget(target), "#{pane_id}")
+	result, err := c.run(defaultTimeout, "display-message", "-p", "-t", normalizeTarget(target), "#{pane_id}")
 	if err != nil {
 		if strings.Contains(err.Error(), "can't find pane") || strings.Contains(err.Error(), "can't find window") {
 			return false, nil
@@ -119,6 +119,9 @@ func (c *Client) TargetAlive(target string) (bool, error) {
 			return false, nil
 		}
 		return false, err
+	}
+	if strings.TrimSpace(result.Stdout) == "" {
+		return false, nil
 	}
 	return true, nil
 }

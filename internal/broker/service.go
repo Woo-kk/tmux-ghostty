@@ -734,14 +734,11 @@ func (s *Service) pollOnce(now time.Time) {
 func (s *Service) gcLocked(now time.Time) bool {
 	prunedPanes := map[string]struct{}{}
 	prunedWorkspaces := map[string]struct{}{}
-	healthyWorkspaces := map[string]bool{}
 
 	for workspaceID, workspace := range s.state.Workspaces {
 		if workspace.Status == model.WorkspaceClosed || len(workspace.PaneIDs) == 0 {
 			prunedWorkspaces[workspaceID] = struct{}{}
-			continue
 		}
-		healthyWorkspaces[workspaceID] = s.workspaceHealthyLocked(workspace)
 	}
 	for paneID, pane := range s.state.Panes {
 		workspace, ok := s.state.Workspaces[pane.WorkspaceID]
@@ -753,7 +750,7 @@ func (s *Service) gcLocked(now time.Time) bool {
 			prunedPanes[paneID] = struct{}{}
 			continue
 		}
-		if pane.Mode == model.ModeDisconnected && !healthyWorkspaces[workspace.ID] {
+		if s.paneReclaimableLocked(pane) {
 			prunedPanes[paneID] = struct{}{}
 		}
 	}
@@ -831,6 +828,43 @@ func (s *Service) gcLocked(now time.Time) bool {
 	s.killOrphanManagedSessionsLocked(remainingManagedSessions)
 	s.lastGCAt = now
 	return changed
+}
+
+func (s *Service) paneReclaimableLocked(pane model.Pane) bool {
+	target := strings.TrimSpace(pane.LocalTmuxTarget)
+	if target != "" {
+		alive, err := s.tmux.TargetAlive(target)
+		if err != nil {
+			if s.log != nil {
+				s.log.Error("broker.gc.target_alive_check_failed", map[string]any{
+					"pane_id": pane.ID,
+					"target":  target,
+					"error":   err.Error(),
+				})
+			}
+			return false
+		}
+		if alive {
+			return false
+		}
+	}
+
+	session := strings.TrimSpace(pane.LocalTmuxSession)
+	if session == "" {
+		return true
+	}
+	alive, err := s.tmux.HasSession(session)
+	if err != nil {
+		if s.log != nil {
+			s.log.Error("broker.gc.session_alive_check_failed", map[string]any{
+				"pane_id": pane.ID,
+				"session": session,
+				"error":   err.Error(),
+			})
+		}
+		return false
+	}
+	return !alive
 }
 
 func (s *Service) killSessionBestEffortLocked(session string, msg string, paneID string) {

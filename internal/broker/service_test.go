@@ -485,7 +485,7 @@ func TestCloseWorkspacePrunesTrackedStateAndActions(t *testing.T) {
 	}
 }
 
-func TestNewServiceStartupGCPrunesPersistedStaleState(t *testing.T) {
+func TestNewServiceStartupGCPreservesLiveDegradedStateAndPrunesDeadState(t *testing.T) {
 	dir := t.TempDir()
 	logger, err := logx.New("")
 	if err != nil {
@@ -503,26 +503,41 @@ func TestNewServiceStartupGCPrunesPersistedStaleState(t *testing.T) {
 		t.Fatalf("seed closed tmux session: %v", err)
 	}
 
-	staleWorkspace := model.NewWorkspace()
-	staleWorkspace.Status = model.WorkspaceDegraded
-	staleWorkspace.GhosttyWindowID = "missing-window"
-	staleWorkspace.GhosttyTabID = "missing-tab"
-	stalePane := model.NewPane(staleWorkspace.ID)
-	stalePane.GhosttyTerminalID = "missing-terminal"
-	stalePane.Mode = model.ModeDisconnected
-	staleWorkspace.PaneIDs = []string{stalePane.ID}
-	if err := tmuxClient.NewSession(stalePane.LocalTmuxSession); err != nil {
-		t.Fatalf("seed stale tmux session: %v", err)
+	liveWorkspace := model.NewWorkspace()
+	liveWorkspace.Status = model.WorkspaceDegraded
+	liveWorkspace.GhosttyWindowID = "missing-window"
+	liveWorkspace.GhosttyTabID = "missing-tab"
+	livePane := model.NewPane(liveWorkspace.ID)
+	livePane.GhosttyTerminalID = "missing-terminal"
+	livePane.Mode = model.ModeDisconnected
+	liveWorkspace.PaneIDs = []string{livePane.ID}
+	if err := tmuxClient.NewSession(livePane.LocalTmuxSession); err != nil {
+		t.Fatalf("seed live degraded tmux session: %v", err)
 	}
+
+	deadWorkspace := model.NewWorkspace()
+	deadWorkspace.Status = model.WorkspaceDegraded
+	deadWorkspace.GhosttyWindowID = "missing-window-dead"
+	deadWorkspace.GhosttyTabID = "missing-tab-dead"
+	deadPane := model.NewPane(deadWorkspace.ID)
+	deadPane.GhosttyTerminalID = "missing-terminal-dead"
+	deadPane.Mode = model.ModeDisconnected
+	deadWorkspace.PaneIDs = []string{deadPane.ID}
+	deadAction := model.NewAction(deadPane.ID, "agent", "echo dead", "echo dead", model.RiskRead, model.ApprovalNotRequired, model.ActionCompleted)
+
+	liveAction := model.NewAction(livePane.ID, "agent", "echo live", "echo live", model.RiskRead, model.ApprovalNotRequired, model.ActionCompleted)
 
 	state := model.NewState()
 	state.Workspaces[closedWorkspace.ID] = closedWorkspace
-	state.Workspaces[staleWorkspace.ID] = staleWorkspace
+	state.Workspaces[liveWorkspace.ID] = liveWorkspace
+	state.Workspaces[deadWorkspace.ID] = deadWorkspace
 	state.Panes[closedPane.ID] = closedPane
-	state.Panes[stalePane.ID] = stalePane
+	state.Panes[livePane.ID] = livePane
+	state.Panes[deadPane.ID] = deadPane
 	actions := []model.Action{
 		model.NewAction(closedPane.ID, "agent", "echo closed", "echo closed", model.RiskRisky, model.ApprovalPending, model.ActionQueued),
-		model.NewAction(stalePane.ID, "agent", "echo stale", "echo stale", model.RiskRead, model.ApprovalNotRequired, model.ActionCompleted),
+		liveAction,
+		deadAction,
 	}
 
 	statePath := filepath.Join(dir, "state.json")
@@ -548,34 +563,53 @@ func TestNewServiceStartupGCPrunesPersistedStaleState(t *testing.T) {
 		t.Fatalf("create service: %v", err)
 	}
 
-	if len(service.state.Workspaces) != 0 || len(service.state.Panes) != 0 {
-		t.Fatalf("expected startup GC to prune stale persisted state, got workspaces=%d panes=%d", len(service.state.Workspaces), len(service.state.Panes))
+	if len(service.state.Workspaces) != 1 || len(service.state.Panes) != 1 {
+		t.Fatalf("expected startup GC to keep only live degraded state, got workspaces=%d panes=%d", len(service.state.Workspaces), len(service.state.Panes))
 	}
-	if len(service.actions) != 0 {
-		t.Fatalf("expected startup GC to prune persisted actions, got %d", len(service.actions))
+	if _, ok := service.state.Workspaces[liveWorkspace.ID]; !ok {
+		t.Fatalf("expected live degraded workspace to survive startup GC")
 	}
-	for _, session := range []string{closedPane.LocalTmuxSession, stalePane.LocalTmuxSession} {
-		alive, err := tmuxClient.HasSession(session)
+	if _, ok := service.state.Panes[livePane.ID]; !ok {
+		t.Fatalf("expected live degraded pane to survive startup GC")
+	}
+	if len(service.actions) != 1 || service.actions[0].ID != liveAction.ID {
+		t.Fatalf("expected only live pane action to survive startup GC, got %+v", service.actions)
+	}
+	for _, check := range []struct {
+		session string
+		alive   bool
+	}{
+		{session: closedPane.LocalTmuxSession, alive: false},
+		{session: livePane.LocalTmuxSession, alive: true},
+		{session: deadPane.LocalTmuxSession, alive: false},
+	} {
+		alive, err := tmuxClient.HasSession(check.session)
 		if err != nil {
-			t.Fatalf("check session %s: %v", session, err)
+			t.Fatalf("check session %s: %v", check.session, err)
 		}
-		if alive {
-			t.Fatalf("expected startup GC to kill session %s", session)
+		if alive != check.alive {
+			t.Fatalf("unexpected startup session liveness for %s: got %v want %v", check.session, alive, check.alive)
 		}
 	}
 	persistedState, err := stateStore.LoadState()
 	if err != nil {
 		t.Fatalf("reload state: %v", err)
 	}
-	if len(persistedState.Workspaces) != 0 || len(persistedState.Panes) != 0 {
-		t.Fatalf("expected persisted state to be compacted, got %#v", persistedState)
+	if len(persistedState.Workspaces) != 1 || len(persistedState.Panes) != 1 {
+		t.Fatalf("expected persisted state to keep only live degraded entries, got %#v", persistedState)
+	}
+	if _, ok := persistedState.Workspaces[liveWorkspace.ID]; !ok {
+		t.Fatalf("expected persisted live degraded workspace to remain after startup GC")
+	}
+	if _, ok := persistedState.Panes[livePane.ID]; !ok {
+		t.Fatalf("expected persisted live degraded pane to remain after startup GC")
 	}
 	persistedActions, err := stateStore.LoadActions()
 	if err != nil {
 		t.Fatalf("reload actions: %v", err)
 	}
-	if len(persistedActions) != 0 {
-		t.Fatalf("expected persisted actions to be compacted, got %d", len(persistedActions))
+	if len(persistedActions) != 1 || persistedActions[0].ID != liveAction.ID {
+		t.Fatalf("expected persisted actions to keep only the live pane action, got %+v", persistedActions)
 	}
 }
 
@@ -655,6 +689,54 @@ func TestStatusGCPrunesStaleEntriesAndShrinksCounts(t *testing.T) {
 	}
 }
 
+func TestStatusKeepsDegradedLiveEntriesAndActions(t *testing.T) {
+	service, tmuxClient := newTestServiceWithRemoteAndTmux(t, fakeRemoteClient{})
+
+	workspace := model.NewWorkspace()
+	workspace.GhosttyWindowID = "missing-window"
+	workspace.GhosttyTabID = "missing-tab"
+	pane := model.NewPane(workspace.ID)
+	pane.GhosttyTerminalID = "missing-terminal"
+	workspace.PaneIDs = []string{pane.ID}
+	service.state.Workspaces[workspace.ID] = workspace
+	service.state.Panes[pane.ID] = pane
+	liveAction := model.NewAction(pane.ID, "agent", "echo live", "echo live", model.RiskRead, model.ApprovalNotRequired, model.ActionCompleted)
+	service.actions = append(service.actions, liveAction)
+	if err := tmuxClient.NewSession(pane.LocalTmuxSession); err != nil {
+		t.Fatalf("seed live pane session: %v", err)
+	}
+
+	status, err := service.Status()
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.WorkspaceCount != 1 || status.PaneCount != 1 {
+		t.Fatalf("expected degraded live entries to remain in status, got %+v", status)
+	}
+	if len(status.Workspaces) != 1 || status.Workspaces[0].ID != workspace.ID {
+		t.Fatalf("expected degraded workspace in status, got %+v", status.Workspaces)
+	}
+	if len(status.Panes) != 1 || status.Panes[0].ID != pane.ID {
+		t.Fatalf("expected degraded pane in status, got %+v", status.Panes)
+	}
+	if status.Workspaces[0].Status != model.WorkspaceDegraded {
+		t.Fatalf("expected degraded workspace status, got %q", status.Workspaces[0].Status)
+	}
+	if status.Panes[0].Mode != model.ModeDisconnected {
+		t.Fatalf("expected disconnected pane mode after topology loss, got %q", status.Panes[0].Mode)
+	}
+	if len(service.actions) != 1 || service.actions[0].ID != liveAction.ID {
+		t.Fatalf("expected live pane action to remain after status GC, got %+v", service.actions)
+	}
+	alive, err := tmuxClient.HasSession(pane.LocalTmuxSession)
+	if err != nil {
+		t.Fatalf("check tmux session: %v", err)
+	}
+	if !alive {
+		t.Fatalf("expected live degraded pane session to remain alive")
+	}
+}
+
 func TestGCPreservesHealthyWorkspaceAndSession(t *testing.T) {
 	service, tmuxClient := newTestServiceWithRemoteAndTmux(t, fakeRemoteClient{})
 	created, err := service.CreateWorkspace()
@@ -676,6 +758,68 @@ func TestGCPreservesHealthyWorkspaceAndSession(t *testing.T) {
 	}
 	if !alive {
 		t.Fatalf("expected healthy pane session to remain alive")
+	}
+}
+
+func TestGCPrunesDeadPaneAndPreservesLivePaneInMixedWorkspace(t *testing.T) {
+	service, tmuxClient := newTestServiceWithRemoteAndTmux(t, fakeRemoteClient{})
+
+	workspace := model.NewWorkspace()
+	workspace.GhosttyWindowID = "missing-window"
+	workspace.GhosttyTabID = "missing-tab"
+	livePane := model.NewPane(workspace.ID)
+	livePane.GhosttyTerminalID = "missing-terminal-live"
+	livePane.Mode = model.ModeDisconnected
+	deadPane := model.NewPane(workspace.ID)
+	deadPane.GhosttyTerminalID = "missing-terminal-dead"
+	deadPane.Mode = model.ModeDisconnected
+	workspace.PaneIDs = []string{livePane.ID, deadPane.ID}
+	service.state.Workspaces[workspace.ID] = workspace
+	service.state.Panes[livePane.ID] = livePane
+	service.state.Panes[deadPane.ID] = deadPane
+	service.actions = append(service.actions,
+		model.NewAction(livePane.ID, "agent", "echo live", "echo live", model.RiskRead, model.ApprovalNotRequired, model.ActionCompleted),
+		model.NewAction(deadPane.ID, "agent", "echo dead", "echo dead", model.RiskRead, model.ApprovalNotRequired, model.ActionCompleted),
+	)
+	service.lastObserved[livePane.ID] = time.Now().UTC()
+	service.lastObserved[deadPane.ID] = time.Now().UTC()
+	if err := tmuxClient.NewSession(livePane.LocalTmuxSession); err != nil {
+		t.Fatalf("seed live pane session: %v", err)
+	}
+
+	service.gcLocked(time.Now().UTC())
+
+	if len(service.state.Workspaces) != 1 || len(service.state.Panes) != 1 {
+		t.Fatalf("expected mixed workspace GC to keep only the live pane, got workspaces=%d panes=%d", len(service.state.Workspaces), len(service.state.Panes))
+	}
+	if _, ok := service.state.Panes[livePane.ID]; !ok {
+		t.Fatalf("expected live pane to survive mixed workspace GC")
+	}
+	if _, ok := service.state.Panes[deadPane.ID]; ok {
+		t.Fatalf("expected dead pane to be pruned from mixed workspace GC")
+	}
+	updatedWorkspace, ok := service.state.Workspaces[workspace.ID]
+	if !ok {
+		t.Fatalf("expected workspace to remain after pruning only dead panes")
+	}
+	if len(updatedWorkspace.PaneIDs) != 1 || updatedWorkspace.PaneIDs[0] != livePane.ID {
+		t.Fatalf("expected workspace pane list to be compacted to the live pane, got %+v", updatedWorkspace.PaneIDs)
+	}
+	if len(service.actions) != 1 || service.actions[0].PaneID != livePane.ID {
+		t.Fatalf("expected actions for pruned panes to be removed, got %+v", service.actions)
+	}
+	if _, ok := service.lastObserved[livePane.ID]; !ok {
+		t.Fatalf("expected observe bookkeeping for live pane to remain")
+	}
+	if _, ok := service.lastObserved[deadPane.ID]; ok {
+		t.Fatalf("expected observe bookkeeping for dead pane to be pruned")
+	}
+	alive, err := tmuxClient.HasSession(livePane.LocalTmuxSession)
+	if err != nil {
+		t.Fatalf("check live pane tmux session: %v", err)
+	}
+	if !alive {
+		t.Fatalf("expected live pane session to remain alive")
 	}
 }
 
