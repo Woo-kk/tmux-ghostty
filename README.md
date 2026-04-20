@@ -117,7 +117,7 @@ tmux-ghostty help
 
 `tmux-ghostty workspace create` opens a managed workspace in a new Ghostty window and returns its first pane. Managed workspaces always use a new window; if you need another managed pane, create another workspace window.
 
-The broker now auto-collects stale tracked resources. Closing a workspace reclaims its pane/workspace monitor state immediately, actions tied to pruned panes disappear automatically, and orphaned managed `tg-pane-*` tmux sessions are killed during startup, status/reconcile sync, workspace close, and coarse periodic broker GC.
+The broker now auto-collects truly stale tracked resources. Closing a workspace still reclaims its pane/workspace monitor state immediately, actions tied to pruned panes disappear automatically, and orphaned managed `tg-pane-*` tmux sessions are killed during startup, status/reconcile sync, workspace close, and coarse periodic broker GC. A degraded pane/workspace is not pruned just because Ghostty window/tab/terminal bindings disappear; if its local tmux target/session is still alive, the broker keeps that state so `status`, `pane list`, and manual `workspace reconcile` can recover it later. GC only prunes panes whose local tmux target/session is no longer live, plus closed workspaces and panes whose workspace record is already gone.
 
 `tmux-ghostty host connect <pane-id>` opens JumpServer in the pane and returns once it is ready for manual input at `menu`, `target_search`, or `auth_prompt`. `tmux-ghostty host attach <pane-id> <query>` keeps the existing behavior and only succeeds once the remote shell is ready.
 

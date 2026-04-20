@@ -117,7 +117,7 @@ tmux-ghostty help
 
 `tmux-ghostty workspace create` 会在一个新的 Ghostty window 中创建受管 workspace，并返回首个 pane。受管 workspace 统一使用新窗口；如果你还想再拿一个受管 pane，就再创建一个新的 workspace window。
 
-broker 现在会自动回收 stale 的受管资源。关闭 workspace 后会立刻回收对应的 pane/workspace 监控状态；被裁剪 pane 关联的 action 会自动消失；孤儿的受管 `tg-pane-*` tmux session 会在 broker 启动、status/reconcile 同步、workspace close 以及粗粒度周期 GC 中被清理。
+broker 现在会自动回收真正 stale 的受管资源。关闭 workspace 后仍然会立刻回收对应的 pane/workspace 监控状态；被裁剪 pane 关联的 action 会自动消失；孤儿的受管 `tg-pane-*` tmux session 会在 broker 启动、status/reconcile 同步、workspace close 以及粗粒度周期 GC 中被清理。但 degraded pane/workspace 不会仅仅因为 Ghostty window/tab/terminal 绑定丢失就被删掉；只要本地 tmux target/session 还活着，broker 就会保留这份状态，让 `status`、`pane list` 和手动 `workspace reconcile` 还能继续恢复它。GC 现在只会裁剪本地 tmux target/session 已经失活的 pane，以及已经关闭的 workspace、或其 workspace 记录已经不存在的 pane。
 
 `tmux-ghostty host connect <pane-id>` 会在指定 pane 中打开 JumpServer，并在到达 `menu`、`target_search` 或 `auth_prompt` 时立刻返回，交还给用户继续输入。`tmux-ghostty host attach <pane-id> <query>` 则保留原语义，只有进到远端 shell 才算成功。
 
